@@ -27,6 +27,8 @@
 
 #pragma pack(1)
 
+#define IS_BIG_ENDIAN (*(uint16_t *)"\0\xff" < 0x100)
+
 #define MONO        0
 #define BAYER_RGGB  8
 #define BAYER_GRBG  9
@@ -124,9 +126,18 @@ uint64_t readFrameDate(SERMovie *movie, long idx);
 
 /* Utils */
 
-void memrev64(void *p) {
-    unsigned char *x = p, t;
+void swapint32(void *n) {
+    unsigned char *x = n, t;
+    t = x[0];
+    x[0] = x[3];
+    x[3] = t;
+    t = x[1];
+    x[1] = x[2];
+    x[2] = t;
+}
 
+void swapint64(void *n) {
+    unsigned char *x = n, t;
     t = x[0];
     x[0] = x[7];
     x[7] = t;
@@ -139,11 +150,6 @@ void memrev64(void *p) {
     t = x[3];
     x[3] = x[4];
     x[4] = t;
-}
-
-uint64_t intrev64(uint64_t v) {
-    memrev64(&v);
-    return v;
 }
 
 static int fileExists(char *path) {
@@ -586,6 +592,18 @@ long getTrailerOffset(SERHeader *header) {
     return getFrameOffset(header, frame_idx);
 }
 
+void swapMovieHeader(SERHeader *header) {
+    swapint32(&header->uiLuID);
+    swapint32(&header->uiColorID);
+    swapint32(&header->uiLittleEndian);
+    swapint32(&header->uiImageWidth);
+    swapint32(&header->uiImageHeight);
+    swapint32(&header->uiPixelDepth);
+    swapint32(&header->uiFrameCount);
+    swapint64(&header->ulDateTime);
+    swapint64(&header->ulDateTime_UTC);
+}
+
 int performMovieCheck(SERMovie *movie, int *issues) {
     assert(movie != NULL);
     int ok = 1, count = 0;
@@ -668,6 +686,7 @@ int parseHeader(SERMovie *movie) {
         totread += nread;
         hdrptr += nread;
     }
+    if (IS_BIG_ENDIAN) swapMovieHeader(movie->header);
     printf("Read %lu header bytes\n\n", totread);
     return 1;
 }
@@ -689,7 +708,7 @@ uint64_t readFrameDate(SERMovie *movie, long idx) {
         nread = fread(ptr, 1, sizeof(date), movie->file);
         if (nread <= 0) break;
     }
-    /*if (date > 0) date = intrev64(date);*/
+    if (IS_BIG_ENDIAN && date > 0) swapint64(&date);
     return date;
 }
 
@@ -1137,7 +1156,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (conf.log_to_json) {
-        char json_filename[1024];
+        char json_filename[BUFLEN];
         makeFilepath(json_filename, filepath, "/tmp/", NULL, ".json");
         FILE *json = fopen(json_filename, "w");
         if (json == NULL) {
