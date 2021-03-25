@@ -618,7 +618,7 @@ int parseHeader(SERMovie *movie) {
         totread += nread;
         hdrptr += nread;
     }
-    printf("Read %lu header bytes\n", totread);
+    printf("Read %lu header bytes\n\n", totread);
     return 1;
 }
 
@@ -669,7 +669,7 @@ int determineFrameRange(SERHeader * header, SERFrameRange *range,
         if (err != NULL) *err = "first frame beyond movie frames";
         return 0;
     }
-    if (count > 0) to = from + count;
+    if (count > 0) to = from + count - 1;
     else if (to < 0) to = tot + to;
     if (to >= tot) {
         if (err != NULL) *err = "last frame beyond movie frames";
@@ -679,7 +679,7 @@ int determineFrameRange(SERHeader * header, SERFrameRange *range,
         if (err != NULL) *err = "last frame < first frame";
         return 0;
     }
-    count = to - from;
+    count = 1 + (to - from);
     range->from = from;
     range->to = to;
     range->count = count;
@@ -889,7 +889,8 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
         goto fail;
     }
     for (i = 0; i < count; i++) {
-        printf("\rWriting frames: %d/%d                         ", i+1, count);
+        printf("\rWriting frames: %d/%d                                     ",
+            i + 1, count);
         fflush(stdout);
         int frame_idx = from + i;
         if (!appendFrameToVideo(ofile, movie, frame_idx, &err)) {
@@ -975,6 +976,7 @@ void printMetadata(SERHeader *header) {
 }
 
 void printMovieInfo(SERMovie *movie) {
+    printf("==== MOVIE INFO ====\n");
     if (movie->header != NULL) printMetadata(movie->header);
     printf("First Frame Date: %llu\n", movie->firstFrameDate);
     printf("Last Frame Date: %llu\n", movie->lastFrameDate);
@@ -989,6 +991,7 @@ void printMovieInfo(SERMovie *movie) {
     if (movie->duration > 0)
         printf("Duration: %d sec.\n", movie->duration);
     printf("Filesize: %ld\n", movie->filesize);
+    printf("\n");
 }
 
 int logToJSON(FILE *json_file, SERMovie *movie)
@@ -1054,7 +1057,8 @@ int main(int argc, char **argv) {
         SERFrameRange range;
         char *errmsg = NULL;
         if (!determineFrameRange(header, &range, from, to, count, &errmsg)) {
-            if (errmsg == NULL) errmsg = "invalid frame range";
+            fprintf(stderr, "ERROR: Invalid frame range: ");
+            if (errmsg == NULL) errmsg = "could not determine frame range";
             fprintf(stderr, "%s\n", errmsg);
             goto err;
         }
