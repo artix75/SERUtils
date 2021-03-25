@@ -1,3 +1,21 @@
+/*
+ *  SERUtils - A command line utility for processing SER movie files
+ *  Copyright (C) 2020  Giuseppe Fabio Nicotra <artix2 at gmail dot com>
+ *
+ *  This program is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,8 +49,10 @@
 #define TIMEUNITS_PER_SEC   (NANOSEC_PER_SEC / 100)
 #define SECS_UNTIL_UNIXTIME 62135596800
 
-#define BUFLEN 1024
+#define BUFLEN 4096
 #define MAXBUF (BUFLEN - 1)
+
+#define SER_FILE_ID "LUCAM-RECORDER"
 
 typedef struct {
     uint32_t from;
@@ -663,6 +683,7 @@ int determineFrameRange(SERHeader * header, SERFrameRange *range,
 }
 
 void closeMovie(SERMovie *movie) {
+    if (movie == NULL) return;
     if (movie->header != NULL) free(movie->header);
     if (movie->file != NULL) fclose(movie->file);
     free(movie);
@@ -696,6 +717,11 @@ SERMovie *openMovie(char *filepath) {
     }
     if (!parseHeader(movie)) {
         fprintf(stderr, "Failed to parse movie header\n");
+        closeMovie(movie);
+        return NULL;
+    }
+    if (strcmp(SER_FILE_ID, movie->header->sFileID) != 0) {
+        fprintf(stderr, "File is not a SER movie file\n");
         closeMovie(movie);
         return NULL;
     }
