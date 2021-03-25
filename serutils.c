@@ -108,12 +108,19 @@ typedef struct {
     char *output_dir;
     int log_to_json;
     int use_winjupos_filename;
+    int do_check;
 } MainConfig;
 
 
 /* Globals */
 
 MainConfig conf;
+
+/* Forward declarations */
+
+int countMovieWarnings(int warnings);
+void printMovieWarnings(int warnings);
+uint64_t readFrameDate(SERMovie *movie, long idx);
 
 /* Utils */
 
@@ -430,6 +437,7 @@ void initConfig() {
     conf.output_dir = NULL;
     conf.log_to_json = 0;
     conf.use_winjupos_filename = 0;
+    conf.do_check = 0;
 };
 
 void printHelp(char **argv) {
@@ -437,6 +445,8 @@ void printHelp(char **argv) {
     fprintf(stderr, "OPTIONS:\n\n");
     fprintf(stderr, "   --extract FRAME_RANGE    Extract frames\n");
     fprintf(stderr, "   --json                   Log movie info to JSON\n");
+    fprintf(stderr, "   --check                  Perform movie check before "
+                                                 "any other action\n");
     fprintf(stderr, "   -o, --output FILE        Output movie path.\n");
     fprintf(stderr, "   --winjupos-format        Use WinJUPOS spec. for "
                                                  "output filename\n");
@@ -524,6 +534,8 @@ int parseOptions(int argc, char **argv) {
             conf.log_to_json = 1;
         } else if (strcmp("--winjupos-format", arg) == 0) {
             conf.use_winjupos_filename = 1;
+        } else if (strcmp("--check", arg) == 0) {
+            conf.do_check = 1;
         } else if (strcmp("-o", arg) == 0 || strcmp("--output", arg) == 0) {
             if (is_last_arg) {
                 fprintf(stderr, "Missing value for output\n");
@@ -572,6 +584,44 @@ long getFrameOffset(SERHeader *header, int frame_idx) {
 long getTrailerOffset(SERHeader *header) {
     uint32_t frame_idx = header->uiFrameCount;
     return getFrameOffset(header, frame_idx);
+}
+
+int performMovieCheck(SERMovie *movie, int *issues) {
+    assert(movie != NULL);
+    int ok = 1, count = 0;
+    printf("======  CHECK ======\n");
+    printf("Checking for movie issues...\n");
+    if (movie->header == NULL) {
+        printf("FATAL: missing header\n");
+        return 0;
+    }
+    if (movie->warnings != 0) {
+        int wcount = countMovieWarnings(movie->warnings);
+        printf("Found %d warnings:\n", wcount);
+        printMovieWarnings(movie->warnings);
+        count += wcount;
+        ok = 0;
+    }
+    long trailer_offs = getTrailerOffset(movie->header);
+    if (movie->filesize > trailer_offs) {
+       int has_valid_dates = 1, i;
+       uint64_t last_date = 0;
+       for (i = 0; i < movie->header->uiFrameCount; i++) {
+            uint64_t date = readFrameDate(movie, i);
+            has_valid_dates = (last_date <= date);
+            if (!has_valid_dates) break;
+            last_date = date;
+       }
+       if (!has_valid_dates) {
+            count += 1;
+            printf("WARN: frame datetimes are not valid\n");
+            ok = 0;
+       }
+    }
+    if (issues != NULL) *issues = count;
+    if (ok) printf("Good, no issues found!\n\n");
+    else printf("Found %d issue(s)\n\n", count);
+    return ok;
 }
 
 FILE *openMovieFileForReading(SERMovie *movie, char **err) {
@@ -693,6 +743,15 @@ void closeMovie(SERMovie *movie) {
     free(movie);
 }
 
+int countMovieWarnings(int warnings) {
+    size_t len = sizeof(warnings), i;
+    int count = 0;
+    for (i = 0; i < len; i++) {
+        if (i & (1 << i)) count++;
+    }
+    return count;
+}
+
 void printMovieWarnings(int warnings) {
     if (warnings & WARN_INCOMPLETE_FRAMES)
         fprintf(stderr, "WARN: movie frames are incomplete\n");
@@ -747,7 +806,8 @@ SERMovie *openMovie(char *filepath) {
         movie->duration = duration;
     } else movie->warnings |= WARN_BAD_FRAME_DATES;
 check_warns:
-    if (movie->warnings > 0) printMovieWarnings(movie->warnings);
+    if (movie->warnings > 0 && !conf.do_check)
+        printMovieWarnings(movie->warnings);
     return movie;
 }
 
@@ -871,6 +931,7 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
         err = "could not open output video for writing";
         goto fail;
     }
+    printf("== EXTRACT FRAMES ==\n");
     printf("Extracting %d frame(s): %d - %d\n", count, from + 1, to + 1);
     printf("Writing movie header\n");
     if (!writeHeaderToVideo(ofile, new_header)) {
@@ -889,8 +950,10 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
         goto fail;
     }
     for (i = 0; i < count; i++) {
-        printf("\rWriting frames: %d/%d                                     ",
-            i + 1, count);
+        int frame_id = i + 1;
+        int perc = ((float)(frame_id / (float)count)) * 100;
+        printf("\rWriting frames: %d/%d (%d%%)                            ",
+            frame_id, count, perc);
         fflush(stdout);
         int frame_idx = from + i;
         if (!appendFrameToVideo(ofile, movie, frame_idx, &err)) {
@@ -991,6 +1054,8 @@ void printMovieInfo(SERMovie *movie) {
     if (movie->duration > 0)
         printf("Duration: %d sec.\n", movie->duration);
     printf("Filesize: %ld\n", movie->filesize);
+    if (movie->warnings != 0)
+        printf("Found %d warning(s)\n", countMovieWarnings(movie->warnings));
     printf("\n");
 }
 
@@ -1050,8 +1115,10 @@ int main(int argc, char **argv) {
         goto err;
     }
     printMovieInfo(movie);
+    int check_succeded = 1;
+    if (conf.do_check) check_succeded = performMovieCheck(movie, NULL);
     SERHeader *header = movie->header;
-    if (conf.action == ACTION_EXTRACT) {
+    if (conf.action == ACTION_EXTRACT && check_succeded) {
         int from = conf.frames_from, to = conf.frames_to,
             count = conf.frames_count;
         SERFrameRange range;
@@ -1064,16 +1131,6 @@ int main(int argc, char **argv) {
         }
         char *output_path = conf.output_path;
         if (conf.use_winjupos_filename) output_path = NULL;
-        /*if (output_path == NULL) {
-            char opath[1024];
-            char suffix[255];
-            sprintf(suffix, "-%d-%d", range.from + 1, range.to + 1);
-            output_path = opath;
-            if (!makeFilepath(output_path, filepath, "/tmp/", suffix, ".ser")) {
-                fprintf(stderr, "Failed to create temporary filepath\n");
-                goto err;
-            }
-        }*/
         int ok = extractFramesFromVideo(movie, output_path, &range);
         if (!ok) goto err;
         closeMovie(movie);
