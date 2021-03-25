@@ -45,7 +45,9 @@
 #define WARN_INCOMPLETE_TRAILER (1 << 1)
 #define WARN_BAD_FRAME_DATES    (1 << 2)
 
-#define ACTION_EXTRACT 1
+#define ACTION_NONE     0
+#define ACTION_EXTRACT  1
+#define ACTION_CUT      2
 
 #define NANOSEC_PER_SEC     1000000000
 #define TIMEUNITS_PER_SEC   (NANOSEC_PER_SEC / 100)
@@ -419,7 +421,8 @@ int makeMovieOutputPath(char *output_path, SERMovie *movie,
         }
     }
     if (!using_wjupos && range != NULL) {
-        sprintf(suffix_buffer, "-%d-%d", range->from + 1, range->to + 1);
+        char *fmt = (conf.action == ACTION_CUT ? "-%d-%d-cut" : "-%d-%d");
+        sprintf(suffix_buffer, fmt, range->from + 1, range->to + 1);
         suffix = suffix_buffer;
     }
     if (dir == NULL) dir = conf.output_dir;
@@ -438,7 +441,7 @@ void initConfig() {
     conf.frames_from = 0;
     conf.frames_to = 0;
     conf.frames_count = 0;
-    conf.action = 0;
+    conf.action = ACTION_NONE;
     conf.output_path = NULL;
     conf.output_dir = NULL;
     conf.log_to_json = 0;
@@ -450,6 +453,7 @@ void printHelp(char **argv) {
     fprintf(stderr, "Usage: %s [OPTIONS] SER_MOVIE\n\n", argv[0]);
     fprintf(stderr, "OPTIONS:\n\n");
     fprintf(stderr, "   --extract FRAME_RANGE    Extract frames\n");
+    fprintf(stderr, "   --cut FRAME_RANGE        Cut frames\n");
     fprintf(stderr, "   --json                   Log movie info to JSON\n");
     fprintf(stderr, "   --check                  Perform movie check before "
                                                  "any other action\n");
@@ -528,14 +532,17 @@ int parseOptions(int argc, char **argv) {
         /*if (arg[0] == '-') {
             if (*(++arg) == '-') arg++;
         } else break;*/
-        if (strcmp("--extract", arg) == 0) {
+        int is_extract_opt = (strcmp("--extract", arg) == 0);
+        int is_cut_opt = (strcmp("--cut", arg) == 0);
+        if (is_extract_opt || is_cut_opt) {
             if (is_last_arg) {
-                fprintf(stderr, "Missing value for --extract\n");
+                fprintf(stderr, "Missing value for `%s`\n", arg);
                 exit(1);
             }
             char *frames = argv[++i];
-            if (!parseFrameArgument(frames)) goto invalid_extract;
-            conf.action = ACTION_EXTRACT;
+            if (!parseFrameArgument(frames)) goto invalid_range_arg;
+            if (is_extract_opt) conf.action = ACTION_EXTRACT;
+            else if (is_cut_opt) conf.action = ACTION_CUT;
         } else if (strcmp("--json", arg) == 0) {
             conf.log_to_json = 1;
         } else if (strcmp("--winjupos-format", arg) == 0) {
@@ -558,8 +565,8 @@ int parseOptions(int argc, char **argv) {
         else break;
     }
     return i;
-invalid_extract:
-    fprintf(stderr, "Invalid --extract value\n");
+invalid_range_arg:
+    fprintf(stderr, "Invalid frame range\n");
     exit(1);
     return -1;
 }
@@ -766,7 +773,7 @@ int countMovieWarnings(int warnings) {
     size_t len = sizeof(warnings), i;
     int count = 0;
     for (i = 0; i < len; i++) {
-        if (i & (1 << i)) count++;
+        if (warnings & (1 << i)) count++;
     }
     return count;
 }
@@ -844,6 +851,24 @@ int writeHeaderToVideo(FILE *video, SERHeader *header) {
     }
     printf("Written %zu/%zu header byte(s)\n", totwritten, maxbytes);
     return (totwritten == maxbytes);
+}
+
+int writeTrailerToVideo(FILE *video, uint64_t *datetimes, size_t size) {
+    size_t nwritten = 0, totwritten = 0, remain = size;
+    char *ptr = (char *) datetimes;
+    while (totwritten < size) {
+        nwritten = fwrite(ptr, 1, remain, video);
+        if (nwritten <= 0) break;
+        totwritten += nwritten;
+        ptr += nwritten;
+        remain -= nwritten;
+    }
+    int ok = (totwritten == size);
+    if (!ok) {
+        fprintf(stderr, "Written %zu trailer byte(s) of %zu\n",
+            totwritten, size);
+    }
+    return ok;
 }
 
 int appendFrameToVideo(FILE *video, SERMovie *srcmovie,
@@ -992,18 +1017,7 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
     printf("\n");
     fflush(stdout);
     printf("Writing frame datetimes trailer\n");
-    size_t nwritten = 0, totwritten = 0, remain = trailer_size;
-    char *ptr = (char *) datetimes_buffer;
-    while (totwritten < trailer_size) {
-        nwritten = fwrite(ptr, 1, remain, ofile);
-        if (nwritten <= 0) break;
-        totwritten += nwritten;
-        ptr += nwritten;
-        remain -= nwritten;
-    }
-    if (totwritten != trailer_size) {
-        fprintf(stderr, "Written %zu trailer byte(s) of %zu\n",
-            totwritten, trailer_size);
+    if (!writeTrailerToVideo(ofile, datetimes_buffer, trailer_size)) {
         err = "failed to write frame datetimes trailer";
         goto fail;
     }
@@ -1022,6 +1036,151 @@ fail:
         fprintf(stderr, "Could not extract frames: %s (frame count: %d)\n",
             err, header->uiFrameCount);
     } else fprintf(stderr, "Could not extract frames\n");
+    return 0;
+}
+
+int cutFramesFromVideo(SERMovie *movie, char *outputpath, SERFrameRange *range)
+{
+    char *err = NULL;
+    SERHeader *new_header = NULL;
+    uint64_t *datetimes_buffer = NULL;
+    int i = 0;
+    uint32_t from, to, count, tot_frames, first_frame_idx, last_frame_idx,
+            src_last_frame;
+    from = range->from;
+    to = range->to;
+    count = range->count;
+    SERHeader *header = movie->header;
+    if (header == NULL) {
+        err = "missing source movie header";
+        goto fail;
+    }
+    if (count >= movie->header->uiFrameCount) {
+        err = "frames to cut must be less than source frame count";
+        goto fail;
+    }
+    new_header = duplicateHeader(header);
+    if (new_header == NULL) goto fail;
+    tot_frames = movie->header->uiFrameCount - count;
+    new_header->uiFrameCount = tot_frames;
+    src_last_frame = (movie->header->uiFrameCount - 1);
+    if (from == 0) first_frame_idx = to;
+    else first_frame_idx = 0;
+    if (to == src_last_frame) last_frame_idx = from;
+    else last_frame_idx = src_last_frame;
+    int64_t utc_diff = header->ulDateTime_UTC - header->ulDateTime;
+    uint64_t first_frame_date = readFrameDate(movie, first_frame_idx);
+    uint64_t first_frame_utc = first_frame_date;
+    uint64_t last_frame_date = readFrameDate(movie, last_frame_idx);
+    if (first_frame_date == 0) {
+        err = "unable to read first frame date";
+        goto fail;
+    }
+    if (utc_diff > 0 && utc_diff < first_frame_utc)
+        first_frame_utc -= utc_diff;
+    new_header->ulDateTime = first_frame_date;
+    new_header->ulDateTime_UTC = first_frame_utc;
+    if (outputpath == NULL) {
+        char opath[BUFLEN];
+        SERMovie dummy_movie = {0};
+        dummy_movie.filepath = movie->filepath;
+        dummy_movie.header = new_header;
+        dummy_movie.firstFrameDate = first_frame_date;
+        dummy_movie.lastFrameDate = last_frame_date;
+        if (makeMovieOutputPath(opath, &dummy_movie, range, NULL) <= 0)
+            goto fail;
+        outputpath = opath;
+    }
+    FILE *ofile = fopen(outputpath, "w");
+    if (ofile == NULL) {
+        fprintf(stderr, "Failed to open %s for writing\n", outputpath);
+        err = "could not open output video for writing";
+        goto fail;
+    }
+    printf("==== CUT FRAMES ====\n");
+    printf("Cutting %d frame(s): %d - %d\n", count, from + 1, to + 1);
+    printf("Total output frames: %d\n", tot_frames);
+    printf("Writing movie header\n");
+    if (!writeHeaderToVideo(ofile, new_header)) {
+        err = "failed to write header";
+        goto fail;
+    }
+    long offset = getFrameOffset(header, from);
+    if (fseek(movie->file, offset, SEEK_SET) < 0) {
+        err = "frame offset beyond movie length";
+        goto fail;
+    }
+    size_t trailer_size = (tot_frames * sizeof(uint64_t));
+    datetimes_buffer = malloc(trailer_size);
+    if (datetimes_buffer == NULL) {
+        err = "out-of-memory";
+        goto fail;
+    }
+    int frame_idx, frame_id = 0;
+    for (i = 0; i < from; i++) {
+        frame_id = i + 1;
+        frame_idx = i;
+        int perc = ((float)(frame_id / (float)tot_frames)) * 100;
+        printf("\rWriting frames: %d/%d (%d%%)                            ",
+            frame_id, tot_frames, perc);
+        fflush(stdout);
+        if (!appendFrameToVideo(ofile, movie, frame_idx, &err)) {
+            printf("\n");
+            fflush(stdout);
+            goto fail;
+        }
+        uint64_t datetime = readFrameDate(movie, frame_idx);
+        if (datetime == 0) {
+            printf("\n");
+            fflush(stdout);
+            err = "invalid frame date";
+            goto fail;
+        }
+        datetimes_buffer[frame_idx] = datetime;
+    }
+    for (i = to + 1; i <= src_last_frame; i++) {
+        frame_idx++;
+        frame_id = frame_idx + 1;
+        int perc = ((float)(frame_id / (float)tot_frames)) * 100;
+        printf("\rWriting frames: %d/%d (%d%%)                            ",
+            frame_id, tot_frames, perc);
+        fflush(stdout);
+        if (!appendFrameToVideo(ofile, movie, i, &err)) {
+            printf("\n");
+            fflush(stdout);
+            goto fail;
+        }
+        uint64_t datetime = readFrameDate(movie, i);
+        if (datetime == 0) {
+            printf("\n");
+            fflush(stdout);
+            err = "invalid frame date";
+            goto fail;
+        }
+        datetimes_buffer[frame_idx] = datetime;
+    }
+    printf("\n");
+    fflush(stdout);
+    printf("Writing frame datetimes trailer\n");
+    if (!writeTrailerToVideo(ofile, datetimes_buffer, trailer_size)) {
+        err = "failed to write frame datetimes trailer";
+        goto fail;
+    }
+    printf("New video written to:\n%s\n", outputpath);
+    fflush(stdout);
+
+    if (new_header != NULL) free(new_header);
+    if (datetimes_buffer != NULL) free(datetimes_buffer);
+    fclose(ofile);
+    return 1;
+fail:
+    if (ofile != NULL) fclose(ofile);
+    if (new_header != NULL) free(new_header);
+    if (datetimes_buffer != NULL) free(datetimes_buffer);
+    if (err != NULL) {
+        fprintf(stderr, "Could not cut frames: %s (frame count: %d)\n",
+            err, header->uiFrameCount);
+    } else fprintf(stderr, "Could not cut frames\n");
     return 0;
 }
 
@@ -1137,7 +1296,7 @@ int main(int argc, char **argv) {
     int check_succeded = 1;
     if (conf.do_check) check_succeded = performMovieCheck(movie, NULL);
     SERHeader *header = movie->header;
-    if (conf.action == ACTION_EXTRACT && check_succeded) {
+    if (conf.action != ACTION_NONE && check_succeded) {
         int from = conf.frames_from, to = conf.frames_to,
             count = conf.frames_count;
         SERFrameRange range;
@@ -1150,7 +1309,11 @@ int main(int argc, char **argv) {
         }
         char *output_path = conf.output_path;
         if (conf.use_winjupos_filename) output_path = NULL;
-        int ok = extractFramesFromVideo(movie, output_path, &range);
+        int ok = 0;
+        if (conf.action == ACTION_EXTRACT)
+            ok = extractFramesFromVideo(movie, output_path, &range);
+        else if (conf.action == ACTION_CUT)
+            ok = cutFramesFromVideo(movie, output_path, &range);
         if (!ok) goto err;
         closeMovie(movie);
         return 0;
