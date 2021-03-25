@@ -444,7 +444,7 @@ void printHelp(char **argv) {
     fprintf(stderr, "\n");
     fprintf(stderr, "NOTES:\n\n");
     fprintf(stderr, "   * The value for FRAME_RANGE can be:\n");
-    fprintf(stderr, "       <from>-<to>\n");
+    fprintf(stderr, "       <from>..<to>\n");
     fprintf(stderr, "       <from>,<count>\n");
     fprintf(stderr, "       <from>\n");
     fprintf(stderr, "     You can use negative value for <from> and <to>.\n"
@@ -466,14 +466,18 @@ int parseFrameArgument (char *arg) {
     int is_comma = 0;
     size_t arglen = strlen(arg);
     if (arglen == 0) return 0;
-    char *sep = strchr(arg, '-');
+    /* Search for separators: '-', ".." and ',' */
+    char *sep = strstr(arg, "..");
     if (sep == NULL) sep = strchr(arg, ',');
     if (sep != NULL) {
-        if (sep == arg) return 0;
-        if (sep == (arg + (arglen - 1))) return 0;
         is_comma = (sep[0] == ',');
+        int seplen = (is_comma ? 1 : 2);
+        /* If arguments starts with separator (ie. ,1), it's invalid. */
+        if (sep == arg) return 0;
+        /* If arguments ends with separator (ie. 1,1), it's invalid. */
+        if (sep == (arg + (arglen - seplen))) return 0;
         *sep = '\0';
-        char *last_val = sep + 1;
+        char *last_val = sep + seplen;
         from = atoi(arg);
         if (from == 0) return 0;
         last_n = atoi(last_val);
