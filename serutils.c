@@ -129,6 +129,7 @@ typedef struct {
     int log_to_json;
     int use_winjupos_filename;
     int do_check;
+    int overwrite;
 } MainConfig;
 
 
@@ -482,6 +483,7 @@ void initConfig() {
     conf.log_to_json = 0;
     conf.use_winjupos_filename = 0;
     conf.do_check = 0;
+    conf.overwrite = 0;
 };
 
 void printHelp(char **argv) {
@@ -496,6 +498,8 @@ void printHelp(char **argv) {
     fprintf(stderr, "   -o, --output FILE        Output movie path.\n");
     fprintf(stderr, "   --winjupos-format        Use WinJUPOS spec. for "
                                                  "output filename\n");
+    fprintf(stderr, "   --overwrite              Force overwriting existing "
+                                                 "files.\n");
     fprintf(stderr, "   -h, --help               Print this help\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "NOTES:\n\n");
@@ -520,6 +524,15 @@ void printHelp(char **argv) {
         "added to it.\n");
     fprintf(stderr, "\n");
 };
+
+int askForFileOverwrite(char *filepath) {
+    char answer = '\0';
+    int totread = 0, nread = 0;
+    printf("File '%s' already exists.\nOverwrite it? (y/N) ", filepath);
+    scanf("%c", &answer);
+    printf("\n");
+    return answer == 'y' || answer == 'Y';
+}
 
 int parseFrameRangeArgument (char *arg) {
     uint32_t from = 0, to = 0, count = 0, last_n = 0;
@@ -832,6 +845,8 @@ int parseOptions(int argc, char **argv) {
             conf.use_winjupos_filename = 1;
         } else if (strcmp("--check", arg) == 0) {
             conf.do_check = 1;
+        } else if (strcmp("--overwrite", arg) == 0) {
+            conf.overwrite = 1;
         } else if (strcmp("-o", arg) == 0 || strcmp("--output", arg) == 0) {
             if (is_last_arg) {
                 fprintf(stderr, "Missing value for output\n");
@@ -1219,6 +1234,7 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
     char *err = NULL;
     SERHeader *new_header = NULL;
     uint64_t *datetimes_buffer = NULL;
+    FILE *ofile = NULL;
     int i = 0;
     uint32_t from, to, count;
     from = range->from;
@@ -1255,7 +1271,11 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
             goto fail;
         outputpath = opath;
     }
-    FILE *ofile = fopen(outputpath, "w");
+    if (fileExists(outputpath) && !conf.overwrite) {
+        int overwrite = askForFileOverwrite(outputpath);
+        if (!overwrite) goto fail;
+    }
+    ofile = fopen(outputpath, "w");
     if (ofile == NULL) {
         fprintf(stderr, "Failed to open %s for writing\n", outputpath);
         err = "could not open output video for writing";
@@ -1331,6 +1351,7 @@ int cutFramesFromVideo(SERMovie *movie, char *outputpath, SERFrameRange *range)
     char *err = NULL;
     SERHeader *new_header = NULL;
     uint64_t *datetimes_buffer = NULL;
+    FILE *ofile = NULL;
     int i = 0;
     uint32_t from, to, count, tot_frames, first_frame_idx, last_frame_idx,
             src_last_frame;
@@ -1378,7 +1399,11 @@ int cutFramesFromVideo(SERMovie *movie, char *outputpath, SERFrameRange *range)
             goto fail;
         outputpath = opath;
     }
-    FILE *ofile = fopen(outputpath, "w");
+    if (fileExists(outputpath) && !conf.overwrite) {
+        int overwrite = askForFileOverwrite(outputpath);
+        if (!overwrite) goto fail;
+    }
+    ofile = fopen(outputpath, "w");
     if (ofile == NULL) {
         fprintf(stderr, "Failed to open %s for writing\n", outputpath);
         err = "could not open output video for writing";
@@ -1503,7 +1528,7 @@ print_and_free_movie_files:
         }
     }
     if (movie_files != NULL) {
-        printf("Files:\n\n");
+        if (extracted_movies > 0) printf("Files:\n\n");
         for (i = 0; i < extracted_movies; i++) {
             char *filepath = movie_files[i];
             if (filepath != NULL) printf("%s\n", filepath);
