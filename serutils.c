@@ -48,6 +48,14 @@
 #define ACTION_NONE     0
 #define ACTION_EXTRACT  1
 #define ACTION_CUT      2
+#define ACTION_SPLIT    3
+
+#define SPLIT_MODE_COUNT    1
+#define SPLIT_MODE_FRAMES   2
+#define SPLIT_MODE_SECS     3
+
+#define MAX_SPLIT_COUNT             50
+#define MIN_SPLIT_FRAMES_PER_CHUNCK 100
 
 #define NANOSEC_PER_SEC     1000000000
 #define TIMEUNITS_PER_SEC   (NANOSEC_PER_SEC / 100)
@@ -57,6 +65,12 @@
 #define MAXBUF (BUFLEN - 1)
 
 #define SER_FILE_ID "LUCAM-RECORDER"
+
+#define getRangeCount(r) (1 + (r->to - r->from));
+#define updateRangeCount(r) do {\
+    assert(r->to >= r->from);\
+    r->count = getRangeCount(r);\
+} while (0);
 
 typedef struct {
     uint32_t from;
@@ -107,6 +121,8 @@ typedef struct {
     int frames_from;
     int frames_to;
     int frames_count;
+    int split_amount;
+    int split_mode;
     int action;
     char *output_path;
     char *output_dir;
@@ -119,6 +135,10 @@ typedef struct {
 /* Globals */
 
 MainConfig conf;
+SERFrameRange splitRanges[MAX_SPLIT_COUNT] = {0};
+int split_count = 0;
+char output_movie_path[MAXBUF] = {0};
+
 
 /* Forward declarations */
 
@@ -204,6 +224,19 @@ char *dirname(char *dst, char *path) {
 time_t videoTimeToUnixtime(uint64_t video_t) {
     uint64_t seconds = video_t / TIMEUNITS_PER_SEC;
     return seconds - SECS_UNTIL_UNIXTIME;
+}
+
+time_t getFrameRangeDuration(SERMovie *movie, SERFrameRange *range) {
+    if (range->to < range->from) return -1;
+    if (range->to == range->from) return 0;
+    uint64_t start_date = readFrameDate(movie, range->from),
+             end_date = readFrameDate(movie, range->to);
+    if (start_date == 0 || end_date == 0) return -1;
+    if (end_date < start_date) return -1;
+    if (start_date == end_date) return 0;
+    time_t start_t = videoTimeToUnixtime(start_date),
+           end_t = videoTimeToUnixtime(end_date);
+    return end_t - start_t;
 }
 
 int makeFilepath(char *dstfilepath, char *original_path, char *dir,
@@ -441,6 +474,8 @@ void initConfig() {
     conf.frames_from = 0;
     conf.frames_to = 0;
     conf.frames_count = 0;
+    conf.split_amount = 0;
+    conf.split_mode = 0;
     conf.action = ACTION_NONE;
     conf.output_path = NULL;
     conf.output_dir = NULL;
@@ -454,6 +489,7 @@ void printHelp(char **argv) {
     fprintf(stderr, "OPTIONS:\n\n");
     fprintf(stderr, "   --extract FRAME_RANGE    Extract frames\n");
     fprintf(stderr, "   --cut FRAME_RANGE        Cut frames\n");
+    fprintf(stderr, "   --split SPLIT            Split movie\n");
     fprintf(stderr, "   --json                   Log movie info to JSON\n");
     fprintf(stderr, "   --check                  Perform movie check before "
                                                  "any other action\n");
@@ -470,6 +506,10 @@ void printHelp(char **argv) {
     fprintf(stderr, "     You can use negative value for <from> and <to>.\n"
         "     Example: -1 means the last frame\n\n"
     );
+    fprintf(stderr, "   * Examples of value for SPLIT:\n");
+    fprintf(stderr, "       --split  5      Split movie in 5 movies\n");
+    fprintf(stderr, "       --split  10f    Split movie every 10 frames\n");
+    fprintf(stderr, "       --split  10s    Split movie every 10 seconds\n\n");
     fprintf(stderr,
         "   * If --output is omitted, filename will be automatically "
         "determined by using\n     original filename and frame range or, if "
@@ -481,7 +521,7 @@ void printHelp(char **argv) {
     fprintf(stderr, "\n");
 };
 
-int parseFrameArgument (char *arg) {
+int parseFrameRangeArgument (char *arg) {
     uint32_t from = 0, to = 0, count = 0, last_n = 0;
     int is_comma = 0;
     size_t arglen = strlen(arg);
@@ -520,6 +560,228 @@ int parseFrameArgument (char *arg) {
     return 1;
 }
 
+int determineSplitRanges(SERMovie *movie) {
+    assert(movie->header != NULL);
+    char *err = NULL;
+    char errmsg[1024] = {0};
+    uint32_t frames_to_add = movie->header->uiFrameCount,
+             frames_added = 0, ranges_added = 0, last_frame_added = 0,
+             last_movie_frame = movie->header->uiFrameCount - 1, i;
+    time_t chuncks_duration[MAX_SPLIT_COUNT] = {0};
+    if (conf.split_amount <= 0) {
+        err = "invalid value";
+        goto fail;
+    }
+    if (conf.split_mode<SPLIT_MODE_COUNT || conf.split_mode>SPLIT_MODE_SECS) {
+        err = "invalid mode (see --help)";
+        goto fail;
+    }
+    int min_src_frames = (
+        MIN_SPLIT_FRAMES_PER_CHUNCK + (MIN_SPLIT_FRAMES_PER_CHUNCK / 2)
+    );
+    if (movie->header->uiFrameCount <= min_src_frames) {
+        sprintf(errmsg, "at least %d frames needed in source movie",
+            min_src_frames);
+        err = errmsg;
+        goto fail;
+    }
+    if (conf.split_mode == SPLIT_MODE_COUNT) {
+        split_count = conf.split_amount;
+        if (split_count > MAX_SPLIT_COUNT) goto max_split_count_exceeded;
+        int frames_per_movie = movie->header->uiFrameCount / split_count,
+            frames_added = 0, ranges_added = 0;
+        if (frames_per_movie < MIN_SPLIT_FRAMES_PER_CHUNCK) {
+            sprintf(errmsg,
+                "too much splits, every chunck needs at least %d frames",
+                MIN_SPLIT_FRAMES_PER_CHUNCK
+            );
+            err = errmsg;
+            goto fail;
+        }
+        for (i = 0; i < split_count; i++) {
+            uint32_t from = i * frames_per_movie;
+            uint32_t to = from + frames_per_movie - 1;
+            if (to >= movie->header->uiFrameCount) {
+                to = movie->header->uiFrameCount - 1;
+                break;
+            }
+            uint32_t count = 1 + (to - from);
+            SERFrameRange *range = splitRanges + i;
+            range->from = from;
+            range->to = to;
+            range->count = count;
+            frames_added += count;
+            ranges_added++;
+        }
+        if (frames_added < movie->header->uiFrameCount) {
+            SERFrameRange *range = splitRanges + ranges_added;
+            range->from = frames_added;
+            range->to = movie->header->uiFrameCount - 1;
+            updateRangeCount(range);
+            frames_added += range->count;
+            if (range->count < MIN_SPLIT_FRAMES_PER_CHUNCK) {
+                if (ranges_added == 0) {
+                    sprintf(errmsg, "at least %d frames needed",
+                        MIN_SPLIT_FRAMES_PER_CHUNCK);
+                    err = errmsg;
+                    goto fail;
+                }
+                SERFrameRange *prev_range = range - 1;
+                prev_range->to = range->to;
+                updateRangeCount(prev_range);
+            } else ranges_added++;
+            split_count = ranges_added;
+        }
+    } else if (conf.split_mode == SPLIT_MODE_FRAMES) {
+        if (conf.split_amount < MIN_SPLIT_FRAMES_PER_CHUNCK) {
+            sprintf(errmsg, "every chunck needs at least %d frames",
+                MIN_SPLIT_FRAMES_PER_CHUNCK);
+            err = errmsg;
+            goto fail;
+        }
+        while (frames_added < frames_to_add) {
+            SERFrameRange *range = splitRanges + ranges_added;
+            if (frames_added == 0) range->from = 0;
+            else range->from = last_frame_added + 1;
+            if (range->from > last_movie_frame) break;
+            range->to = range->from + conf.split_amount - 1;
+            if (range->to > last_movie_frame) range->to = last_movie_frame;
+            updateRangeCount(range);
+            frames_added += range->count;
+            last_frame_added = range->to;
+            if (++ranges_added > MAX_SPLIT_COUNT) {
+                split_count = ranges_added;
+                goto max_split_count_exceeded;
+            }
+        }
+        split_count = ranges_added;
+    } else if (conf.split_mode == SPLIT_MODE_SECS) {
+        err = NULL;
+        time_t previous_t = 0, elapsed_t = 0,
+               max_t = (time_t) conf.split_amount,
+               min_t = ((time_t) conf.split_amount) / 10;
+        SERFrameRange *range = splitRanges;
+        range->from = 0;
+        range->to = 0;
+        range->count = 0;
+        for (i = 0; i < movie->header->uiFrameCount; i++) {
+            uint64_t datetime = readFrameDate(movie, i);
+            if (datetime == 0) goto invalid_datetime;
+            time_t frame_t = videoTimeToUnixtime(datetime);
+            if (frame_t <= 0 || frame_t < previous_t) goto invalid_datetime;
+            if (i == 0) range->from = i;
+            else if (i == range->from) {
+                previous_t = frame_t;
+                continue;
+            } else if (previous_t > 0) {
+                time_t last_frame_elapsed_t = (frame_t - previous_t);
+                if (last_frame_elapsed_t > max_t) {
+                    sprintf(errmsg, "too big time lapse between frame %d and "
+                        "frame %d: %zu seconds",
+                        i, i - 1, last_frame_elapsed_t
+                    );
+                    err = errmsg;
+                    goto fail;
+                }
+                elapsed_t += last_frame_elapsed_t;
+            }
+            if (elapsed_t >= max_t) {
+                uint32_t frame_idx = i;
+                if (elapsed_t > max_t) frame_idx--;
+                range->to = frame_idx;
+                updateRangeCount(range);
+                chuncks_duration[ranges_added] = elapsed_t;
+                if (++ranges_added > MAX_SPLIT_COUNT) {
+                    split_count = ranges_added;
+                    goto max_split_count_exceeded;
+                }
+                if (range->count < MIN_SPLIT_FRAMES_PER_CHUNCK) {
+                    sprintf(errmsg, "every chunck needs at least %d frames",
+                        MIN_SPLIT_FRAMES_PER_CHUNCK);
+                    err = errmsg;
+                    goto fail;
+                }
+                range = splitRanges + ranges_added;
+                range->from = frame_idx + 1;
+                range->to = 0;
+                range->count = 0;
+                elapsed_t = 0;
+            }
+            previous_t = frame_t;
+            continue;
+invalid_datetime:
+            sprintf(errmsg, "invalid datetime for frame %d", i);
+            err = errmsg;
+            break;
+        }
+        if (err != NULL) goto fail;
+        if (range->from > 0 && range->from < last_movie_frame &&
+            range->to == 0)
+        {
+            range->to = last_movie_frame;
+            updateRangeCount(range);
+            time_t duration = getFrameRangeDuration(movie, range);
+            if (range->count < MIN_SPLIT_FRAMES_PER_CHUNCK || duration < min_t) 
+            {
+                if (ranges_added == 0) {
+                    sprintf(errmsg, "at least %d frames needed",
+                        MIN_SPLIT_FRAMES_PER_CHUNCK);
+                    err = errmsg;
+                    goto fail;
+                }
+                SERFrameRange *prev_range = range - 1;
+                prev_range->to = range->to;
+                updateRangeCount(prev_range);
+            } else ranges_added++;
+            chuncks_duration[ranges_added] = duration;
+        }
+        split_count = ranges_added;
+        if (split_count > MAX_SPLIT_COUNT) goto max_split_count_exceeded;
+    }
+    int tot_frames_added = 0;
+    time_t tot_time = 0;
+    for (i = 0; i < split_count; i++) {
+        SERFrameRange *range = splitRanges + i;
+        time_t duration = chuncks_duration[i];
+        if (duration == 0) {
+            duration = getFrameRangeDuration(movie, range);
+            if (duration < 0) {
+                uint64_t start_date = readFrameDate(movie, range->from),
+                         end_date = readFrameDate(movie, range->to);
+                time_t start_t = videoTimeToUnixtime(start_date),
+                       end_t = videoTimeToUnixtime(end_date);
+                fprintf(stderr,
+                    "End frame %d time %zu < start frame %d time %zu\n",
+                    range->to, end_t, range->from, start_t
+                );
+                assert(end_t > start_t);
+            }
+        }
+        tot_time += duration;
+        printf("[%d] Split %d - %d (%d frames, %zu seconds)\n",
+            i, range->from, range->to, range->count, duration);
+        tot_frames_added += range->count;
+    }
+    if (tot_frames_added != movie->header->uiFrameCount) {
+        fprintf(stderr, "FATAL: not all frames added %d/%d\n",
+            tot_frames_added, movie->header->uiFrameCount);
+        assert(tot_frames_added == movie->header->uiFrameCount);
+    }
+    printf("Average frames per chunck: %d\n", (tot_frames_added / split_count));
+    printf("Average seconds per chunck: %ld\n\n",
+        ((time_t)tot_time / split_count));
+    return 1;
+max_split_count_exceeded:
+    sprintf(errmsg, "too much splits (%d), maximum splits allowed: %d",
+        split_count, MAX_SPLIT_COUNT);
+    err = errmsg;
+fail:
+    fprintf(stderr, "Unable to split movie");
+    if (err != NULL) fprintf(stderr, ": %s", err);
+    fprintf(stderr, "\n");
+    return 0;
+}
+
 int parseOptions(int argc, char **argv) {
     int i;
     if (argc == 1) {
@@ -534,15 +796,36 @@ int parseOptions(int argc, char **argv) {
         } else break;*/
         int is_extract_opt = (strcmp("--extract", arg) == 0);
         int is_cut_opt = (strcmp("--cut", arg) == 0);
+        int is_split_opt = (strcmp("--split", arg) == 0);
         if (is_extract_opt || is_cut_opt) {
             if (is_last_arg) {
                 fprintf(stderr, "Missing value for `%s`\n", arg);
                 exit(1);
             }
             char *frames = argv[++i];
-            if (!parseFrameArgument(frames)) goto invalid_range_arg;
+            if (!parseFrameRangeArgument(frames)) goto invalid_range_arg;
             if (is_extract_opt) conf.action = ACTION_EXTRACT;
             else if (is_cut_opt) conf.action = ACTION_CUT;
+        } else if (is_split_opt) {
+            if (is_last_arg) {
+                fprintf(stderr, "Missing value for `split`\n");
+                exit(1);
+            }
+            char *split_val = argv[++i];
+            size_t arglen = strlen(split_val);
+            int split_mode = 0;
+            char last_c = split_val[arglen - 1];
+            if (last_c == 'f') split_mode = SPLIT_MODE_FRAMES;
+            else if (last_c == 's') split_mode = SPLIT_MODE_SECS;
+            else {
+                if (last_c < '0' || last_c > '9') goto invalid_split_arg;
+                split_mode = SPLIT_MODE_COUNT;
+            }
+            int split_amount = atoi(split_val);
+            if (split_amount <= 0) goto invalid_split_arg;
+            conf.split_amount = split_amount;
+            conf.split_mode = split_mode;
+            conf.action = ACTION_SPLIT;
         } else if (strcmp("--json", arg) == 0) {
             conf.log_to_json = 1;
         } else if (strcmp("--winjupos-format", arg) == 0) {
@@ -567,6 +850,10 @@ int parseOptions(int argc, char **argv) {
     return i;
 invalid_range_arg:
     fprintf(stderr, "Invalid frame range\n");
+    exit(1);
+    return -1;
+invalid_split_arg:
+    fprintf(stderr, "Invalid --split value\n");
     exit(1);
     return -1;
 }
@@ -755,10 +1042,9 @@ int determineFrameRange(SERHeader * header, SERFrameRange *range,
         if (err != NULL) *err = "last frame < first frame";
         return 0;
     }
-    count = 1 + (to - from);
     range->from = from;
     range->to = to;
-    range->count = count;
+    updateRangeCount(range);
     return 1;
 }
 
@@ -1021,12 +1307,13 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
         err = "failed to write frame datetimes trailer";
         goto fail;
     }
-    printf("New video written to:\n%s\n", outputpath);
+    printf("New video written to:\n%s\n\n", outputpath);
     fflush(stdout);
 
     if (new_header != NULL) free(new_header);
     if (datetimes_buffer != NULL) free(datetimes_buffer);
     fclose(ofile);
+    strcpy(output_movie_path, outputpath);
     return 1;
 fail:
     if (ofile != NULL) fclose(ofile);
@@ -1172,6 +1459,7 @@ int cutFramesFromVideo(SERMovie *movie, char *outputpath, SERFrameRange *range)
     if (new_header != NULL) free(new_header);
     if (datetimes_buffer != NULL) free(datetimes_buffer);
     fclose(ofile);
+    strcpy(output_movie_path, outputpath);
     return 1;
 fail:
     if (ofile != NULL) fclose(ofile);
@@ -1181,6 +1469,54 @@ fail:
         fprintf(stderr, "Could not cut frames: %s (frame count: %d)\n",
             err, header->uiFrameCount);
     } else fprintf(stderr, "Could not cut frames\n");
+    return 0;
+}
+
+int splitMovie(SERMovie *movie) {
+    char *err = NULL;
+    char errmsg[1024] = {0};
+    if (split_count == 0) goto fail;
+    assert(split_count <= MAX_SPLIT_COUNT);
+    char **movie_files = malloc(split_count * sizeof(*movie_files));
+    if (movie_files == NULL) {
+        err = "Out-of-memory";
+        goto fail;
+    }
+    memset(movie_files, 0, split_count * sizeof(*movie_files));
+    int i, ok, extracted_movies = 0;
+    for (i = 0; i < split_count; i++) {
+        SERFrameRange *range = splitRanges + i;
+        assert(range->from < range->to);
+        assert(range->count > 0);
+        ok = extractFramesFromVideo(movie, NULL, range);
+        if (!ok) break;
+        movie_files[extracted_movies++] = strdup(output_movie_path);
+    }
+print_and_free_movie_files:
+    if (!ok) {
+        if (extracted_movies <= 0) err = "no movies extracted";
+        else {
+            sprintf(errmsg, "only %d frame(s) extracted out of %d",
+                extracted_movies, split_count
+            );
+            err = errmsg;
+        }
+    }
+    if (movie_files != NULL) {
+        printf("Files:\n\n");
+        for (i = 0; i < extracted_movies; i++) {
+            char *filepath = movie_files[i];
+            if (filepath != NULL) printf("%s\n", filepath);
+            free(filepath);
+        }
+        free(movie_files);
+    }
+    if (err != NULL) goto fail;
+    return 1;
+fail:
+    fprintf(stderr, "Failed to split movie");
+    if (err != NULL) fprintf(stderr, ": %s", err);
+    fprintf(stderr, "\n");
     return 0;
 }
 
@@ -1296,7 +1632,9 @@ int main(int argc, char **argv) {
     int check_succeded = 1;
     if (conf.do_check) check_succeded = performMovieCheck(movie, NULL);
     SERHeader *header = movie->header;
-    if (conf.action != ACTION_NONE && check_succeded) {
+    int action = conf.action;
+    if (action < ACTION_SPLIT && action != ACTION_NONE && check_succeded) {
+        /* Split or cut action */
         int from = conf.frames_from, to = conf.frames_to,
             count = conf.frames_count;
         SERFrameRange range;
@@ -1317,6 +1655,12 @@ int main(int argc, char **argv) {
         if (!ok) goto err;
         closeMovie(movie);
         return 0;
+    } else if (conf.action == ACTION_SPLIT && check_succeded) {
+        if (!determineSplitRanges(movie)) {
+            fprintf(stderr, "Failed to split movie!\n");
+            goto err;
+        }
+        if (!splitMovie(movie)) goto err;
     }
     if (conf.log_to_json) {
         char json_filename[BUFLEN];
