@@ -1690,14 +1690,19 @@ int main(int argc, char **argv) {
     if (conf.log_to_json) {
         char json_filename[BUFLEN];
         makeFilepath(json_filename, filepath, "/tmp/", NULL, ".json");
-        FILE *json = fopen(json_filename, "w");
-        if (json == NULL) {
-            fprintf(stderr, "Could not open '%s' for writing!\n",
-                json_filename);
-            return 1;
+        int do_log = 1;
+        if (fileExists(json_filename) && !conf.overwrite)
+            do_log = askForFileOverwrite(json_filename);
+        if (do_log) {
+            FILE *json = fopen(json_filename, "w");
+            if (json == NULL) {
+                fprintf(stderr, "Could not open '%s' for writing!\n",
+                    json_filename);
+                return 1;
+            }
+            logToJSON(json, movie);
+            printf("JSON saved to: '%s'\n", json_filename);
         }
-        logToJSON(json, movie);
-        printf("JSON saved to: '%s'\n", json_filename);
     }
     closeMovie(movie);
     return 0;
