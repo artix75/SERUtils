@@ -73,6 +73,10 @@
 #define BUFLEN 4096
 #define MAXBUF (BUFLEN - 1)
 
+#define SIZE_KB 1024
+#define SIZE_MB (SIZE_KB * 1024)
+#define SIZE_GB (SIZE_MB * 1024)
+
 #define SER_FILE_ID "LUCAM-RECORDER"
 
 #define LOG_LEVEL_INFO          0
@@ -289,6 +293,54 @@ static char *stripped_ctime(const time_t *time) {
     char *s = ctime(time);
     removenl(s);
     return s;
+}
+
+static size_t getElapsedTimeStr(char *dest, size_t max_size, time_t sec) {
+    assert(max_size >= 9);
+    size_t len = 0, remain = max_size;
+    if (sec < 60) {
+        dest[0] = '\0';
+        return 0;
+    }
+    char *p = dest;
+    time_t hour, min;
+    hour = sec / 3600;
+    if (hour > 0) {
+        len += snprintf(p, max_size, "%02ld:", hour);
+        sec %= 3600;
+        remain -= len;
+        p += len;
+        *p = '\0';
+    }
+    min = sec / 60;
+    len += snprintf(p, max_size, "%02ld:", min);
+    sec %= 60;
+    remain -= len;
+    p = dest + len;
+    *p = '\0';
+    len += snprintf(p, max_size, "%02ld", sec);
+    p = dest + len;
+    *p = '\0';
+    return len;
+}
+
+static size_t getFilesizeStr(char *dest, size_t max_size, long bytes) {
+    size_t len = 0;
+    *dest = '\0';
+    float fsize = 0;
+    char *unit = NULL;
+    if (bytes >= SIZE_GB) {
+        fsize = bytes / (float) SIZE_GB;
+        unit = "GB";
+    } else if (bytes >= SIZE_MB) {
+        fsize = bytes / (float) SIZE_MB;
+        unit = "GB";
+    } else {
+        fsize = bytes / (float) SIZE_KB;
+        unit = "KB";
+    }
+    len = snprintf(dest, max_size, "%.2f%s", fsize, unit);
+    return len;
 }
 
 time_t videoTimeToUnixtime(uint64_t video_t) {
@@ -1746,9 +1798,20 @@ void printMovieInfo(SERMovie *movie) {
         printFieldValuePair("Last Frame Timestamp", "%s",
             stripped_ctime(&unix_t));
     }
-    if (movie->duration > 0)
-        printFieldValuePair("Duration", "%d sec.", movie->duration);
-    printFieldValuePair("Filesize", "%ld", movie->filesize);
+    char *fmt = NULL;
+    if (movie->duration > 0) {
+        char elapsed_time[255];
+        elapsed_time[0] = '\0';
+        fmt = "%d sec.%s";
+        size_t elapsed_str_len =
+            getElapsedTimeStr(elapsed_time, 255, movie->duration);
+        if (elapsed_str_len > 0) fmt =  "%d sec. (%s)";
+        printFieldValuePair("Duration", fmt, movie->duration, elapsed_time);
+    }
+    char fsize[255];
+    fmt = "%ld%s";
+    if (getFilesizeStr(fsize, 255, movie->filesize) > 0) fmt = "%ld (%s)";
+    printFieldValuePair("Filesize", fmt, movie->filesize, fsize);
     if (movie->warnings != 0)
         printf("Found %d warning(s)\n", countMovieWarnings(movie->warnings));
     printf("\n");
