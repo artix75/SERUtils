@@ -50,9 +50,16 @@
 #define BAYER_RGB   100
 #define BAYER_BGR   101
 
-#define WARN_INCOMPLETE_FRAMES  (1 << 0)
-#define WARN_INCOMPLETE_TRAILER (1 << 1)
-#define WARN_BAD_FRAME_DATES    (1 << 2)
+#define WARN_FILESIZE_MISMATCH  (1 << 0)
+#define WARN_INCOMPLETE_FRAMES  (1 << 1)
+#define WARN_INCOMPLETE_TRAILER (1 << 2)
+#define WARN_BAD_FRAME_DATES    (1 << 3)
+
+#define WARN_INCOMPLETE_FRAMES_MSG  "incomplete movie frames"
+#define WARN_INCOMPLETE_TRAILER_MSG "incomplete frame datetimes"
+#define WARN_BAD_FRAME_DATES_MSG    "frame datetimes order is wrong"
+#define WARN_FILESIZE_MISMATCH_MSG  \
+    "movie file size does not match header data"
 
 #define ACTION_NONE     0
 #define ACTION_EXTRACT  1
@@ -70,8 +77,11 @@
 #define TIMEUNITS_PER_SEC   (NANOSEC_PER_SEC / 100)
 #define SECS_UNTIL_UNIXTIME 62135596800
 
-#define BUFLEN 4096
-#define MAXBUF (BUFLEN - 1)
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+#define BUFLEN 255
 
 #define SIZE_KB 1024
 #define SIZE_MB (SIZE_KB * 1024)
@@ -103,6 +113,10 @@
 #define LOG_COLOR_CYAN      36
 #define LOG_COLOR_GRAY      37
 #define LOG_COLOR_DEFAULT   39 /* Default foreground color */
+
+#define BREAK_FRAMES        1
+#define BREAK_DATES         2
+#define BREAK_DATE_ORDER    3
 
 #define getRangeCount(r) (1 + (r->to - r->from));
 #define updateRangeCount(r) do {\
@@ -176,6 +190,7 @@ typedef struct {
     int do_check;
     int overwrite;
     int use_colors;
+    int break_movie; /* Used for tests */
 } MainConfig;
 
 
@@ -184,7 +199,13 @@ typedef struct {
 MainConfig conf;
 SERFrameRange splitRanges[MAX_SPLIT_COUNT] = {0};
 int split_count = 0;
-char output_movie_path[MAXBUF] = {0};
+char output_movie_path[PATH_MAX + 1] = {0};
+char *warn_messages[] = {
+    WARN_FILESIZE_MISMATCH_MSG,
+    WARN_INCOMPLETE_FRAMES_MSG,
+    WARN_INCOMPLETE_TRAILER_MSG,
+    WARN_BAD_FRAME_DATES_MSG,
+};
 
 
 /* Forward declarations */
@@ -372,15 +393,15 @@ int makeFilepath(char *dstfilepath, char *original_path, char *dir,
     if (dir == NULL) dir = "/tmp/";
     size_t dirlen = strlen(dir);
     int has_sep = (dirlen > 0 && dir[dirlen - 1] == '/');
-    int ext_has_dot = 0;
+    int ext_has_dot = 0, fstem_len = strlen(fname);
     if (ext != NULL) {
         char *last_dot = strrchr(fname, '.');
-        if (last_dot != NULL) *last_dot = '\0';
+        if (last_dot != NULL) fstem_len = last_dot - fname;
         ext_has_dot = (ext[0] == '.');
     }
     strcpy(dstfilepath, dir);
     if (!has_sep) strcat(dstfilepath, "/");
-    strcat(dstfilepath, fname);
+    strncat(dstfilepath, fname, fstem_len);
     if (suffix != NULL) strcat(dstfilepath, suffix);
     if (ext != NULL) {
         if (!ext_has_dot) strcat(dstfilepath, ".");
@@ -405,7 +426,7 @@ WinJUPOSInfo *getWinJUPOSInfo(char *filepath) {
     }
     memset((void*) info, 0, sizeof(*info));
     char *filename = basename(filepath), *p, *last_p;
-    char name_component[255];
+    char name_component[BUFLEN];
     name_component[0] = '\0';
     size_t namelen = strlen(filename);
     if (namelen < 15) goto invalid;
@@ -527,7 +548,7 @@ size_t generateWinJUPOSMovieFilename(char *dst, size_t max_size,
     time_t mid_t = start_t + ((end_t - start_t) / 2);
     if (mid_t == 0) goto bad_dates;
     WinJUPOSInfo *wjinfo = getWinJUPOSInfo(movie->filepath);
-    char info[BUFLEN];
+    char info[PATH_MAX + 1];
     info[0] = '\0';
     char *obs = movie->header->sObserver, *image_info = NULL;
     if (obs != NULL && strchr(obs, '=') != NULL) obs = NULL;
@@ -562,12 +583,12 @@ bad_dates:
 int makeMovieOutputPath(char *output_path, SERMovie *movie,
     SERFrameRange *range, char *dir)
 {
-    char suffix_buffer[255];
-    char wjfname[BUFLEN];
+    char suffix_buffer[BUFLEN];
+    char wjfname[PATH_MAX + 1];
     char *filepath = movie->filepath, *suffix = NULL;
     int using_wjupos = 0;
     if (conf.use_winjupos_filename) {
-        if (generateWinJUPOSMovieFilename(wjfname, MAXBUF, movie, NULL) > 0) {
+        if (generateWinJUPOSMovieFilename(wjfname, PATH_MAX, movie, NULL) > 0) {
             using_wjupos = 1;
             filepath = wjfname;
         } else {
@@ -575,10 +596,24 @@ int makeMovieOutputPath(char *output_path, SERMovie *movie,
             return 0;
         }
     }
-    if (!using_wjupos && range != NULL) {
+    if (!using_wjupos && range != NULL && conf.break_movie == 0) {
         char *fmt = (conf.action == ACTION_CUT ? "-%d-%d-cut" : "-%d-%d");
         sprintf(suffix_buffer, fmt, range->from + 1, range->to + 1);
         suffix = suffix_buffer;
+    } else if (conf.break_movie > 0) {
+        switch (conf.break_movie) {
+        case BREAK_FRAMES:
+            suffix = "-broken-frames";
+            break;
+        case BREAK_DATES:
+            suffix = "-broken-dates";
+            break;
+        case BREAK_DATE_ORDER:
+            suffix = "-broken-date-order";
+            break;
+        default:
+            suffix = "-broken";
+        }
     }
     if (dir == NULL) dir = conf.output_dir;
     if (dir == NULL) dir = "/tmp/";
@@ -606,10 +641,11 @@ void initConfig() {
     conf.do_check = 0;
     conf.overwrite = 0;
     conf.use_colors = 1;
+    conf.break_movie = 0;
 };
 
 static void log(int level, const char* format, ...) {
-    FILE *out = (level > LOG_LEVEL_SUCCESS ? stderr : stdout);
+    FILE *out = (level > LOG_LEVEL_WARN ? stderr : stdout);
     int color = 0;
     if (conf.use_colors) {
         switch (level) {
@@ -1068,6 +1104,13 @@ int parseOptions(int argc, char **argv) {
                 exit(1);
             }
             conf.output_path = argv[++i];
+        /* Used for tests */
+        } else if (strcmp("--break-frames", arg) == 0) {
+            conf.break_movie = BREAK_FRAMES;
+        } else if (strcmp("--break-dates", arg) == 0) {
+            conf.break_movie = BREAK_DATES;
+        } else if (strcmp("--break-date-order", arg) == 0) {
+            conf.break_movie = BREAK_DATE_ORDER;
         } else if (strcmp("-h", arg) == 0 || strcmp("--help", arg) == 0) {
             printHelp(argv);
             exit(1);
@@ -1076,6 +1119,13 @@ int parseOptions(int argc, char **argv) {
             exit(1);
         }
         else break;
+    }
+    if (conf.break_movie > 0) {
+        conf.action = ACTION_EXTRACT;
+        conf.frames_from = 0;
+        if (conf.break_movie == BREAK_FRAMES) conf.frames_to = -2;
+        else conf.frames_to = -1;
+        conf.use_winjupos_filename = 0;
     }
     return i;
 invalid_range_arg:
@@ -1134,35 +1184,41 @@ int performMovieCheck(SERMovie *movie, int *issues) {
     printHeader("CHECK");
     printf("Checking for movie issues...\n");
     if (movie->header == NULL) {
-        printf("FATAL: missing header\n");
+        logErr(LOG_TAG_FATAL "missing header\n");
         return 0;
     }
-    if (movie->warnings != 0) {
-        int wcount = countMovieWarnings(movie->warnings);
-        logWarn("Found %d warnings:\n", wcount);
-        printMovieWarnings(movie->warnings);
-        count += wcount;
-        ok = 0;
-    }
     long trailer_offs = getTrailerOffset(movie->header);
+    uint32_t frame_c = movie->header->uiFrameCount;
+    size_t expected_filesize = sizeof(SERHeader) +
+        (frame_c * getFrameSize(movie->header));
     if (movie->filesize > trailer_offs) {
-       int has_valid_dates = 1, i;
-       uint64_t last_date = 0;
-       for (i = 0; i < movie->header->uiFrameCount; i++) {
+        int has_valid_dates = 1, i;
+        uint64_t last_date = 0;
+        expected_filesize += (frame_c * sizeof(uint64_t));
+        for (i = 0; i < movie->header->uiFrameCount; i++) {
             uint64_t date = readFrameDate(movie, i);
             has_valid_dates = (last_date <= date);
             if (!has_valid_dates) break;
             last_date = date;
-       }
-       if (!has_valid_dates) {
-            count += 1;
-            logWarn("WARN: frame datetimes are not valid\n");
-            ok = 0;
-       }
+        }
+        if (movie->filesize < expected_filesize)
+            movie->warnings |= WARN_INCOMPLETE_TRAILER;
+        else if (!has_valid_dates) movie->warnings |= WARN_BAD_FRAME_DATES;
     }
+    if (movie->filesize > expected_filesize) {
+        logWarn(LOG_TAG_WARN "%s\n", WARN_FILESIZE_MISMATCH_MSG);
+        movie->warnings |= WARN_FILESIZE_MISMATCH;
+    }
+    if (movie->warnings != 0) {
+        int wcount = countMovieWarnings(movie->warnings);
+        logWarn("Found %d warning(s):\n", wcount);
+        printMovieWarnings(movie->warnings);
+        count += wcount;
+    }
+    ok = (count == 0);
     if (issues != NULL) *issues = count;
     if (ok) logSuccess("Good, no issues found!\n\n");
-    else printf("Found %d issue(s)\n\n", count);
+    else logWarn("Found %d issue(s)\n\n", count);
     return ok;
 }
 
@@ -1295,12 +1351,16 @@ int countMovieWarnings(int warnings) {
 }
 
 void printMovieWarnings(int warnings) {
-    if (warnings & WARN_INCOMPLETE_FRAMES)
-        logWarn("WARN: movie frames are incomplete\n");
-    if (warnings & WARN_INCOMPLETE_TRAILER)
-        logWarn("WARN: movie datetimes trailer is incomplete\n");
-    if (warnings & WARN_BAD_FRAME_DATES)
-        logWarn("WARN: frame datetimes order is wrong\n");
+    size_t wlen = sizeof(warnings),
+           msgcount = sizeof(warn_messages) / sizeof(char *), count = 0, i;
+    for (i = 0; i < wlen; i++) {
+        if (i >= msgcount) break;
+        if (warnings & (1 << i)) {
+            char *wmsg = warn_messages[i];
+            if (wmsg == NULL) break;
+            logWarn(LOG_TAG_WARN "%s\n", wmsg);
+        }
+    }
 }
 
 SERMovie *openMovie(char *filepath) {
@@ -1335,10 +1395,17 @@ SERMovie *openMovie(char *filepath) {
     fseek(movie->file, 0, SEEK_END);
     movie->filesize = ftell(movie->file);
     fseek(movie->file, 0, SEEK_SET);
-    long trailer_offset = getTrailerOffset(movie->header);
+    uint32_t frame_c = movie->header->uiFrameCount;
+    long trailer_offset = getTrailerOffset(movie->header),
+         expected_trailer_size = (frame_c * sizeof(uint64_t)),
+         trailer_size = 0;
     if (movie->filesize < trailer_offset) {
         movie->warnings |= WARN_INCOMPLETE_FRAMES;
         goto check_warns;
+    } else {
+        trailer_size = movie->filesize - trailer_offset;
+        if (trailer_size < expected_trailer_size)
+            movie->warnings |= WARN_INCOMPLETE_TRAILER;
     }
     movie->firstFrameDate = readFirstFrameDate(movie);
     movie->lastFrameDate = readLastFrameDate(movie);
@@ -1346,7 +1413,8 @@ SERMovie *openMovie(char *filepath) {
         uint64_t duration = movie->lastFrameDate - movie->firstFrameDate;
         duration /= TIMEUNITS_PER_SEC;
         movie->duration = duration;
-    } else movie->warnings |= WARN_BAD_FRAME_DATES;
+    } else if (!(movie->warnings & WARN_INCOMPLETE_TRAILER))
+        movie->warnings |= WARN_BAD_FRAME_DATES;
 check_warns:
     if (movie->warnings > 0 && !conf.do_check)
         printMovieWarnings(movie->warnings);
@@ -1462,7 +1530,8 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
     }
     new_header = duplicateHeader(header);
     if (new_header == NULL) goto fail;
-    new_header->uiFrameCount = count;
+    if (conf.break_movie != BREAK_FRAMES)
+        new_header->uiFrameCount = count;
     int64_t utc_diff = header->ulDateTime_UTC - header->ulDateTime;
     uint64_t first_frame_date = readFrameDate(movie, from);
     uint64_t first_frame_utc = first_frame_date;
@@ -1476,7 +1545,7 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
     new_header->ulDateTime = first_frame_date;
     new_header->ulDateTime_UTC = first_frame_utc;
     if (outputpath == NULL) {
-        char opath[BUFLEN];
+        char opath[PATH_MAX + 1];
         SERMovie dummy_movie = {0};
         dummy_movie.filepath = movie->filepath;
         dummy_movie.header = new_header;
@@ -1509,6 +1578,11 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
         goto fail;
     }
     size_t trailer_size = (count * sizeof(uint64_t));
+    uint32_t broken_dates_count = 0;
+    if (conf.break_movie == BREAK_DATES) {
+        broken_dates_count = (count > 1 ? 2 : count);
+        trailer_size = (broken_dates_count * sizeof(uint64_t));
+    }
     datetimes_buffer = malloc(trailer_size);
     if (datetimes_buffer == NULL) {
         err = "out-of-memory";
@@ -1530,10 +1604,17 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
             err = "invalid frame date";
             goto fail;
         }
+        if (broken_dates_count > 0 && i >= broken_dates_count) continue;
         datetimes_buffer[i] = datetime;
     }
     printf("\n");
     fflush(stdout);
+    if (conf.break_movie == BREAK_DATE_ORDER && count > 1) {
+        uint64_t first_date = datetimes_buffer[0],
+                 last_date = datetimes_buffer[count - 1];
+        datetimes_buffer[0] = last_date;
+        datetimes_buffer[1] = first_date;
+    }
     printf("Writing frame datetimes trailer\n");
     if (!writeTrailerToVideo(ofile, datetimes_buffer, trailer_size)) {
         err = "failed to write frame datetimes trailer";
@@ -1601,7 +1682,7 @@ int cutFramesFromVideo(SERMovie *movie, char *outputpath, SERFrameRange *range)
     new_header->ulDateTime = first_frame_date;
     new_header->ulDateTime_UTC = first_frame_utc;
     if (outputpath == NULL) {
-        char opath[BUFLEN];
+        char opath[PATH_MAX + 1];
         SERMovie dummy_movie = {0};
         dummy_movie.filepath = movie->filepath;
         dummy_movie.header = new_header;
@@ -1800,20 +1881,20 @@ void printMovieInfo(SERMovie *movie) {
     }
     char *fmt = NULL;
     if (movie->duration > 0) {
-        char elapsed_time[255];
+        char elapsed_time[BUFLEN];
         elapsed_time[0] = '\0';
         fmt = "%d sec.%s";
         size_t elapsed_str_len =
-            getElapsedTimeStr(elapsed_time, 255, movie->duration);
+            getElapsedTimeStr(elapsed_time, BUFLEN, movie->duration);
         if (elapsed_str_len > 0) fmt =  "%d sec. (%s)";
         printFieldValuePair("Duration", fmt, movie->duration, elapsed_time);
     }
-    char fsize[255];
+    char fsize[BUFLEN];
     fmt = "%ld%s";
-    if (getFilesizeStr(fsize, 255, movie->filesize) > 0) fmt = "%ld (%s)";
+    if (getFilesizeStr(fsize, BUFLEN, movie->filesize) > 0) fmt = "%ld (%s)";
     printFieldValuePair("Filesize", fmt, movie->filesize, fsize);
     if (movie->warnings != 0)
-        printf("Found %d warning(s)\n", countMovieWarnings(movie->warnings));
+        logWarn("Found %d warning(s)\n", countMovieWarnings(movie->warnings));
     printf("\n");
 }
 
@@ -1823,6 +1904,7 @@ int logToJSON(FILE *json_file, SERMovie *movie)
     char observer[40];
     char scope[40];
     char camera[40];
+    char *abspath = NULL;
     SERHeader *header = movie->header;
     strncpy(fileID, (const char*) header->sFileID, 14);
     strncpy(observer, (const char*) header->sObserver, 40);
@@ -1832,7 +1914,10 @@ int logToJSON(FILE *json_file, SERMovie *movie)
     observer[39] = '\0';
     scope[39] = '\0';
     camera[39] = '\0';
+    if (movie->filepath != NULL) abspath = realpath(movie->filepath, NULL);
     fprintf(json_file, "{\n");
+    fprintf(json_file, "    \"path\": \"%s\",\n",
+        (abspath != NULL ? abspath : movie->filepath));
     fprintf(json_file, "    \"fileID\": \"%s\",\n", fileID);
     fprintf(json_file, "    \"littleEndian\": %u,\n",
         header->uiLittleEndian);
@@ -1849,9 +1934,38 @@ int logToJSON(FILE *json_file, SERMovie *movie)
     fprintf(json_file, "    \"datetimeUTC\": %llu,\n", header->ulDateTime_UTC);
     fprintf(json_file, "    \"firstFrameDatetime\": %llu,\n",
         movie->firstFrameDate);
-    fprintf(json_file, "    \"lastFrameDatetime\": %llu\n",
+    fprintf(json_file, "    \"lastFrameDatetime\": %llu,\n",
         movie->lastFrameDate);
+
+    fprintf(json_file, "    \"unixtime\": %zu,\n",
+        videoTimeToUnixtime(header->ulDateTime));
+    fprintf(json_file, "    \"unixtimeUTC\": %zu,\n",
+        videoTimeToUnixtime(header->ulDateTime_UTC));
+    fprintf(json_file, "    \"firstFrameUnixtime\": %zu,\n",
+        videoTimeToUnixtime(movie->firstFrameDate));
+    fprintf(json_file, "    \"lastFrameUnixtime\": %zu,\n",
+        videoTimeToUnixtime(movie->lastFrameDate));
+    fprintf(json_file, "    \"duration\": %d,\n", movie->duration);
+
+    fprintf(json_file, "    \"warnings\": [");
+    size_t wlen = sizeof(movie->warnings),
+           msgcount = sizeof(warn_messages) / sizeof(char *), count = 0, i;
+    for (i = 0; i < wlen; i++) {
+        if (i >= msgcount) break;
+        if (movie->warnings & (1 << i)) {
+            char *wmsg = warn_messages[i];
+            char *comma = "", *endl = "";
+            if (wmsg == NULL) break;
+            if (count++ > 0) comma = ",\n";
+            else comma = "\n";
+            //else endl = "\n";
+            fprintf(json_file, "%s        \"%s\"%s", comma, wmsg, endl);
+        }
+    }
+    fprintf(json_file, "\n    ]\n");
+
     fprintf(json_file, "}\n");
+    if (abspath != NULL) free(abspath);
     return 1;
 }
 
@@ -1907,7 +2021,7 @@ int main(int argc, char **argv) {
         if (!splitMovie(movie)) goto err;
     }
     if (conf.log_to_json) {
-        char json_filename[BUFLEN];
+        char json_filename[PATH_MAX + 1];
         makeFilepath(json_filename, filepath, "/tmp/", NULL, ".json");
         int do_log = 1;
         if (fileExists(json_filename) && !conf.overwrite)
