@@ -38,17 +38,19 @@
     #define IS_UNIX 0
 #endif
 
-#define MONO        0
-#define BAYER_RGGB  8
-#define BAYER_GRBG  9
-#define BAYER_GBRG  10
-#define BAYER_BGGR  11
-#define BAYER_CYYM  16
-#define BAYER_YCMY  17
-#define BAYER_YMCY  18
-#define BAYER_MYYC  19
-#define BAYER_RGB   100
-#define BAYER_BGR   101
+/* Monochromatic (one channel) formats */
+#define COLOR_MONO          0
+#define COLOR_BAYER_RGGB    8
+#define COLOR_BAYER_GRBG    9
+#define COLOR_BAYER_GBRG    10
+#define COLOR_BAYER_BGGR    11
+#define COLOR_BAYER_CYYM    16
+#define COLOR_BAYER_YCMY    17
+#define COLOR_BAYER_YMCY    18
+#define COLOR_BAYER_MYYC    19
+/* Color (three channels) formats */
+#define COLOR_RGB           100
+#define COLOR_BGR          101
 
 #define WARN_FILESIZE_MISMATCH  (1 << 0)
 #define WARN_INCOMPLETE_FRAMES  (1 << 1)
@@ -141,6 +143,12 @@ typedef struct {
     char sFileID[14];
     uint32_t uiLuID;
     uint32_t uiColorID;
+    /* WARN: For some reason, uiLittleEndian is used in the opposite meanning,
+     * so that the image data byte order is big-endian when uiLittleEndian is
+     * 1, and little-endian when uiLittleEndian is 0.
+     * For more info, see:
+     * https://free-astro.org/index.php/SER#Specification_issue_with_endianness
+     */
     uint32_t uiLittleEndian;
     uint32_t uiImageWidth;
     uint32_t uiImageHeight;
@@ -163,6 +171,35 @@ typedef struct {
     uint64_t lastFrameDate;
     int warnings;
 } SERMovie;
+
+typedef union {
+    uint8_t     int8;
+    uint16_t    int16;
+    struct {
+        uint8_t r;
+        uint8_t g;
+        uint8_t b;
+    } rgb8;
+    struct {
+        uint16_t r;
+        uint16_t g;
+        uint16_t b;
+    } rgb16;
+} PixelValue;
+
+typedef struct {
+    uint32_t id;
+    uint32_t index;
+    uint64_t datetime;
+    time_t unixtime;
+    uint32_t littleEndian;
+    uint32_t pixelDepth;
+    uint32_t colorID;
+    uint32_t width;
+    uint32_t height;
+    size_t size;
+    void *data;
+} SERFrame;
 
 typedef struct {
     int year;
@@ -217,6 +254,13 @@ static void log(int level, const char* format, ...);
 
 /* Utils */
 
+void swapint16(void *n) {
+    unsigned char *x = n, t;
+    t = x[0];
+    x[0] = x[1];
+    x[1] = t;
+}
+
 void swapint32(void *n) {
     unsigned char *x = n, t;
     t = x[0];
@@ -259,17 +303,17 @@ static int isDirectory(char *path) {
 
 char *getColorString(uint32_t colorID) {
     switch (colorID) {
-        case MONO: return "MONO";
-        case BAYER_RGGB: return "RGGB";
-        case BAYER_GRBG: return "GRBG";
-        case BAYER_GBRG: return "GBRG";
-        case BAYER_BGGR: return "BGGR";
-        case BAYER_CYYM: return "CYYM";
-        case BAYER_YCMY: return "YCMY";
-        case BAYER_YMCY: return "YMCY";
-        case BAYER_MYYC: return "MYYC";
-        case BAYER_RGB: return "RGB";
-        case BAYER_BGR: return "BGR";
+        case COLOR_MONO: return "MONO";
+        case COLOR_BAYER_RGGB: return "RGGB";
+        case COLOR_BAYER_GRBG: return "GRBG";
+        case COLOR_BAYER_GBRG: return "GBRG";
+        case COLOR_BAYER_BGGR: return "BGGR";
+        case COLOR_BAYER_CYYM: return "CYYM";
+        case COLOR_BAYER_YCMY: return "YCMY";
+        case COLOR_BAYER_YMCY: return "YMCY";
+        case COLOR_BAYER_MYYC: return "MYYC";
+        case COLOR_RGB: return "RGB";
+        case COLOR_BGR: return "BGR";
     }
     return "UNKNOWN";
 };
@@ -1140,7 +1184,7 @@ invalid_split_arg:
 
 int getNumberOfPlanes(SERHeader *header) {
     uint32_t color = header->uiColorID;
-    if (color >= BAYER_RGB) return 3;
+    if (color >= COLOR_RGB) return 3;
     return 1;
 };
 
@@ -1176,6 +1220,193 @@ void swapMovieHeader(SERHeader *header) {
     swapint32(&header->uiFrameCount);
     swapint64(&header->ulDateTime);
     swapint64(&header->ulDateTime_UTC);
+}
+
+void releaseFrame(SERFrame *frame) {
+    if (frame == NULL) return;
+    if (frame->data != NULL) free(frame->data);
+    free(frame);
+}
+
+SERFrame *getFrame(SERMovie *movie, uint32_t frame_idx) {
+    SERFrame *frame = NULL;
+    assert(movie->header != NULL);
+    if (frame_idx >= movie->header->uiFrameCount) {
+        logErr(LOG_TAG_ERR "Frame index %d beyond movie frames (%d)\n",
+            frame_idx, movie->header->uiFrameCount);
+        return NULL;
+    }
+    frame = malloc(sizeof(*frame));
+    if (frame == NULL) {
+        logErr(LOG_TAG_FATAL "Out-of-memory\n");
+        return NULL;
+    }
+    memset(frame, 0, sizeof(*frame));
+    frame->size = getFrameSize(movie->header);
+    long offset_start = sizeof(SERHeader) + (frame_idx * frame->size);
+    long offset_end = offset_start + frame->size;
+    if (movie->filesize < offset_start) {
+        logErr(LOG_TAG_ERR
+            "Missing frame at index %d, movie frames incomplete\n",
+            frame_idx
+        );
+        goto fail;
+    } else if (movie->filesize < offset_end) {
+        logErr(LOG_TAG_ERR, "Incomplete data for frame %d\n", frame_idx);
+        goto fail;
+    }
+    frame->id = frame_idx + 1;
+    frame->index = frame_idx;
+    frame->datetime = readFrameDate(movie, frame_idx);
+    if (frame->datetime > 0)
+        frame->unixtime = videoTimeToUnixtime(frame->datetime);
+    else frame->unixtime = 0;
+    frame->littleEndian = movie->header->uiLittleEndian;
+    frame->pixelDepth = movie->header->uiPixelDepth;
+    frame->colorID = movie->header->uiColorID;
+    frame->width = movie->header->uiImageWidth;
+    frame->height = movie->header->uiImageHeight;
+    frame->data = malloc(frame->size);
+    if (frame->data == NULL) {
+        logErr(LOG_TAG_FATAL "Out-of-memory\n");
+        goto fail;
+    }
+    if (fseek(movie->file, offset_start, SEEK_SET) < 0) {
+        logErr(LOG_TAG_ERR, "Failed to read frame %d\n", frame_idx);
+        goto fail;
+    }
+    size_t nread = 0, totread = 0, remain = frame->size;
+    char *p = (char *) frame->data;
+    while (totread < frame->size) {
+        nread = fread(p, 1, remain, movie->file);
+        if (nread <= 0) break;
+        totread += nread;
+        remain -= nread;
+        p += nread;
+    }
+    if (totread != frame->size) {
+        logErr(LOG_TAG_ERR, "Failed to read frame %d\n", frame_idx);
+        goto fail;
+    }
+    return frame;
+fail:
+    if (frame != NULL) releaseFrame(frame);
+    return NULL;
+}
+
+int getFramePixel(SERFrame *frame, uint32_t x, uint32_t y, PixelValue *value) {
+    assert(value != NULL);
+    if (frame->data == NULL) {
+        logErr("Missing data for frame %d\n", frame->id);
+        return 0;
+    }
+    if (x >= frame->width || y >= frame->height) {
+        logErr("Pixel %d,%d aoutside of frame %d coordinates: %d,%d\n",
+            x, y, frame->id, frame->width, frame->height
+        );
+        return 0;
+    }
+    int channels = (frame->colorID >= COLOR_RGB ? 3 : 1),
+        channel_size = (frame->pixelDepth <= 8 ? 1 : 2);
+    int bytes_per_px = channels * channel_size;
+    uint32_t offset = (y * frame->width * bytes_per_px) + (x * bytes_per_px);
+    char *data = (char *) frame->data + offset;
+    /* For some reason, littleEndian = 1 if it actually is big endian.
+     * For more info:
+     * https://free-astro.org/index.php/SER#Specification_issue_with_endianness
+     */
+    int same_endianess = (IS_BIG_ENDIAN == (frame->littleEndian == 1));
+    int is_rgb = (frame->colorID >= COLOR_RGB);
+    if (channel_size == 1) {
+        /* 1-8 bit frames */
+        uint8_t r, g, b;
+        if (frame->colorID == COLOR_RGB) {
+            r = *((uint8_t *) data++);
+            g = *((uint8_t *) data++);
+            b = *((uint8_t *) data++);
+        } else if (frame->colorID == COLOR_BGR) {
+            b = *((uint8_t *) data++);
+            g = *((uint8_t *) data++);
+            r = *((uint8_t *) data++);
+        } else value->int8 = *((uint8_t *) data);
+        if (is_rgb) {
+            value->rgb8.r = r;
+            value->rgb8.g = g;
+            value->rgb8.b = b;
+        }
+    } else {
+        /* 9-16 bit frames */
+        uint16_t r, g, b, val;
+        uint32_t lshift = 0, rshift = 0;
+        if (frame->pixelDepth < 16) {
+            lshift = 16 - frame->pixelDepth;
+            rshift = frame->pixelDepth - lshift;
+        }
+        if (!is_rgb) {
+            val = *((uint16_t *) data);
+            if (!same_endianess) swapint16(&val);
+            if (frame->pixelDepth < 16)
+                val = (val << lshift) + (val >> rshift);
+            value->int16 = val;
+        } else {
+            if (frame->colorID == COLOR_RGB) {
+                r = *((uint16_t *) data++);
+                g = *((uint16_t *) data++);
+                b = *((uint16_t *) data++);
+            } else if (frame->colorID == COLOR_BGR) {
+                b = *((uint16_t *) data++);
+                g = *((uint16_t *) data++);
+                r = *((uint16_t *) data++);
+            }
+            if (!same_endianess) {
+                swapint16(&r);
+                swapint16(&g);
+                swapint16(&b);
+            }
+            if (frame->pixelDepth < 16) {
+                r = (r << lshift) + (r >> rshift);
+                g = (g << lshift) + (g >> rshift);
+                b = (b << lshift) + (b >> rshift);
+            }
+            value->rgb16.r = r;
+            value->rgb16.g = g;
+            value->rgb16.b = b;
+        }
+    }
+    return 1;
+}
+
+void printPixelValue(SERMovie *movie, uint32_t frame_idx, uint32_t x,
+    uint32_t y)
+{
+    if (movie->warnings & WARN_INCOMPLETE_FRAMES) {
+        logErr(LOG_TAG_ERR "movie frames are incomplete\n");
+        return;
+    }
+    assert(movie->header != NULL);
+    if (frame_idx > movie->header->uiFrameCount) {
+        logErr(LOG_TAG_ERR "frame %d beyond movie frames (%d)\n",
+            frame_idx, movie->header->uiFrameCount);
+        return;
+    }
+    SERFrame *frame = getFrame(movie, frame_idx);
+    if (frame == NULL) {
+        logErr(LOG_TAG_ERR "unable to get frame %d\n", frame_idx);
+        return;
+    }
+    PixelValue px;
+    if (getFramePixel(frame, x, y, &px)) {
+        if (frame->colorID < COLOR_RGB) {
+            if (frame->pixelDepth > 8) printf("%d\n", px.int16);
+            else printf("%d\n", px.int8);
+        } else {
+            if (frame->pixelDepth > 8)
+                printf("%d,%d,%d\n", px.rgb16.r, px.rgb16.g, px.rgb16.b);
+            else
+                printf("%d,%d,%d\n", px.rgb8.r, px.rgb8.g, px.rgb8.b);
+        }
+    }
+    releaseFrame(frame);
 }
 
 int performMovieCheck(SERMovie *movie, int *issues) {
