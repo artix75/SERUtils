@@ -427,6 +427,8 @@ SERMovie *SEROpenMovie(char *filepath) {
     if (movie->filesize < trailer_offset) {
         movie->warnings |= WARN_INCOMPLETE_FRAMES;
         goto has_warns;
+    } else if (!SERMovieHasTrailer(movie)) {
+            movie->warnings |= WARN_MISSING_TRAILER;
     } else {
         trailer_size = movie->filesize - trailer_offset;
         if (trailer_size < expected_trailer_size)

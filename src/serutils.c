@@ -47,6 +47,7 @@
 #define BREAK_FRAMES        1
 #define BREAK_DATES         2
 #define BREAK_DATE_ORDER    3
+#define BREAK_NO_DATES      4
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -103,6 +104,7 @@ char output_movie_path[PATH_MAX + 1] = {0};
 char *warn_messages[] = {
     WARN_FILESIZE_MISMATCH_MSG,
     WARN_INCOMPLETE_FRAMES_MSG,
+    WARN_MISSING_TRAILER_MSG,
     WARN_INCOMPLETE_TRAILER_MSG,
     WARN_BAD_FRAME_DATES_MSG,
 };
@@ -470,6 +472,9 @@ static int makeMovieOutputPath(char *output_path, SERMovie *movie,
             break;
         case BREAK_DATE_ORDER:
             suffix = "-broken-date-order";
+            break;
+        case BREAK_NO_DATES:
+            suffix = "-broken-no-dates";
             break;
         default:
             suffix = "-broken";
@@ -899,6 +904,8 @@ static int parseOptions(int argc, char **argv) {
             conf.break_movie = BREAK_DATES;
         } else if (strcmp("--break-date-order", arg) == 0) {
             conf.break_movie = BREAK_DATE_ORDER;
+        } else if (strcmp("--break-no-dates", arg) == 0) {
+            conf.break_movie = BREAK_NO_DATES;
         } else if (strcmp("-h", arg) == 0 || strcmp("--help", arg) == 0) {
             printHelp(argv);
             exit(1);
@@ -1234,15 +1241,15 @@ static int extractFramesFromVideo(SERMovie *movie, char *outputpath,
                  last_date = datetimes_buffer[count - 1];
         datetimes_buffer[0] = last_date;
         datetimes_buffer[1] = first_date;
-    }
+    } else if (conf.break_movie == BREAK_NO_DATES) goto final;
     printf("Writing frame datetimes trailer\n");
     if (!writeTrailerToVideo(ofile, datetimes_buffer, trailer_size)) {
         err = "failed to write frame datetimes trailer";
         goto fail;
     }
+final:
     printf("New video written to:\n%s\n\n", outputpath);
     fflush(stdout);
-
     if (new_header != NULL) free(new_header);
     if (datetimes_buffer != NULL) free(datetimes_buffer);
     fclose(ofile);
@@ -1485,7 +1492,12 @@ static void printMetadata(SERHeader *header) {
 
 static void printMovieInfo(SERMovie *movie) {
     SERPrintHeader("MOVIE INFO");
+    char fsize[BUFLEN];
     if (movie->header != NULL) printMetadata(movie->header);
+    if (!SERMovieHasTrailer(movie)) {
+        printFieldValuePair("Frame dates", "%s", "missing");
+        goto print_filesize;
+    }
     printFieldValuePair("First Frame Date", "%llu", movie->firstFrameDate);
     printFieldValuePair("Last Frame Date", "%llu", movie->lastFrameDate);
     if (movie->firstFrameDate > 0) {
@@ -1508,7 +1520,7 @@ static void printMovieInfo(SERMovie *movie) {
         if (elapsed_str_len > 0) fmt =  "%d sec. (%s)";
         printFieldValuePair("Duration", fmt, movie->duration, elapsed_time);
     }
-    char fsize[BUFLEN];
+print_filesize:
     fmt = "%ld%s";
     if (getFilesizeStr(fsize, BUFLEN, movie->filesize) > 0) fmt = "%ld (%s)";
     printFieldValuePair("Filesize", fmt, movie->filesize, fsize);

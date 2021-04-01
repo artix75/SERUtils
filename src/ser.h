@@ -48,19 +48,21 @@
 
 #define WARN_FILESIZE_MISMATCH  (1 << 0)
 #define WARN_INCOMPLETE_FRAMES  (1 << 1)
-#define WARN_INCOMPLETE_TRAILER (1 << 2)
-#define WARN_BAD_FRAME_DATES    (1 << 3)
+#define WARN_MISSING_TRAILER    (1 << 2)
+#define WARN_INCOMPLETE_TRAILER (1 << 3)
+#define WARN_BAD_FRAME_DATES    (1 << 4)
 
 #define WARN_INCOMPLETE_FRAMES_MSG  "incomplete movie frames"
-#define WARN_INCOMPLETE_TRAILER_MSG "incomplete frame datetimes"
-#define WARN_BAD_FRAME_DATES_MSG    "frame datetimes order is wrong"
+#define WARN_INCOMPLETE_TRAILER_MSG "incomplete frame dates"
+#define WARN_MISSING_TRAILER_MSG    "missing frame dates"
+#define WARN_BAD_FRAME_DATES_MSG    "frame dates order is wrong"
 #define WARN_FILESIZE_MISMATCH_MSG  \
     "movie file size does not match header data"
 
 #define SER_FILE_ID "LUCAM-RECORDER"
 
 #define SERMovieHasTrailer(movie) \
-    (movie->filesize > SERGetTrailerOffset(movie->header))
+    (movie->filesize > (size_t) SERGetTrailerOffset(movie->header))
 #define SERGetFrameCount(movie) \
     (movie->header->uiFrameCount)
 #define SERGetLastFrameIndex(movie) \
