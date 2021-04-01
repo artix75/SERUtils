@@ -44,11 +44,11 @@
 #define LOG_COLOR_GRAY      37
 #define LOG_COLOR_DEFAULT   39 /* Default foreground color */
 
-#define logInfo(...) SERLog(LOG_LEVEL_INFO, __VA_ARGS__)
-#define logNotice(...) SERLog(LOG_LEVEL_NOTICE, __VA_ARGS__)
-#define logSuccess(...) SERLog(LOG_LEVEL_SUCCESS, __VA_ARGS__)
-#define logWarn(...) SERLog(LOG_LEVEL_WARN, __VA_ARGS__)
-#define logErr(...) SERLog(LOG_LEVEL_ERR, __VA_ARGS__)
+#define SERLogInfo(...) SERLog(LOG_LEVEL_INFO, __VA_ARGS__)
+#define SERLogNotice(...) SERLog(LOG_LEVEL_NOTICE, __VA_ARGS__)
+#define SERLogSuccess(...) SERLog(LOG_LEVEL_SUCCESS, __VA_ARGS__)
+#define SERLogWarn(...) SERLog(LOG_LEVEL_WARN, __VA_ARGS__)
+#define SERLogErr(...) SERLog(LOG_LEVEL_ERR, __VA_ARGS__)
 
 extern int SERLogUseColors;
 extern int SERLogLevel;

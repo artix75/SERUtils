@@ -129,23 +129,23 @@ typedef struct {
     void *data;
 } SERFrame;
 
-SERMovie *openMovie(char *filepath);
-void      closeMovie(SERMovie *movie);
-uint64_t readFrameDate(SERMovie *movie, long idx);
-uint64_t readFirstFrameDate(SERMovie *movie);
-uint64_t readLastFrameDate(SERMovie *movie);
-int getNumberOfPlanes(SERHeader *header);
-int getBytesPerPixel(SERHeader *header);
-size_t getFrameSize(SERHeader *header);
-long getFrameOffset(SERHeader *header, int frame_idx);
-long getTrailerOffset(SERHeader *header);
-SERFrame *getFrame(SERMovie *movie, uint32_t frame_idx);
-int getFramePixel(SERFrame *frame, uint32_t x, uint32_t y,
-                  SERPixelValue *value);
-void releaseFrame(SERFrame *frame);
-SERHeader *duplicateHeader(SERHeader *srcheader);
-int countMovieWarnings(int warnings);
-char *SERGetColorString(uint32_t colorID);
-time_t videoTimeToUnixtime(uint64_t video_t);
+SERMovie   *SEROpenMovie(char *filepath);
+void        SERCloseMovie(SERMovie *movie);
+uint64_t    SERGetFrameDate(SERMovie *movie, long idx);
+uint64_t    SERGetFirstFrameDate(SERMovie *movie);
+uint64_t    SERGetLastFrameDate(SERMovie *movie);
+int         SERGetNumberOfPlanes(SERHeader *header);
+int         SERGetBytesPerPixel(SERHeader *header);
+size_t      SERGetFrameSize(SERHeader *header);
+long        SERGetFrameOffset(SERHeader *header, int frame_idx);
+long        SERGetTrailerOffset(SERHeader *header);
+SERFrame   *SERGetFrame(SERMovie *movie, uint32_t frame_idx);
+int         SERGetFramePixel(SERFrame *frame, uint32_t x, uint32_t y,
+                             SERPixelValue *value);
+void        SERReleaseFrame(SERFrame *frame);
+SERHeader  *SERDuplicateHeader(SERHeader *srcheader);
+int         SERCountMovieWarnings(int warnings);
+char       *SERGetColorString(uint32_t colorID);
+time_t      SERVideoTimeToUnixtime(uint64_t video_t);
 
 #endif /* __SER_H__ */

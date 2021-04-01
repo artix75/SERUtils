@@ -104,17 +104,17 @@ char *warn_messages[] = {
 
 /* Forward declarations */
 
-void printMovieWarnings(int warnings);
+static void printMovieWarnings(int warnings);
 
 /* Utils */
 
-char *basename(char *path) {
+static char *basename(char *path) {
     char *s = strrchr(path, '/');
     if (s == NULL) return path;
     else return s + 1;
 }
 
-char *dirname(char *dst, char *path) {
+static char *dirname(char *dst, char *path) {
     char *s = strrchr(path, '/');
     if (s == NULL) dst[0] = '\0';
     else {
@@ -220,25 +220,26 @@ static size_t getFilesizeStr(char *dest, size_t max_size, long bytes) {
     return len;
 }
 
-time_t getFrameRangeDuration(SERMovie *movie, SERFrameRange *range) {
+static time_t getFrameRangeDuration(SERMovie *movie, SERFrameRange *range) {
     if (range->to < range->from) return -1;
     if (range->to == range->from) return 0;
-    uint64_t start_date = readFrameDate(movie, range->from),
-             end_date = readFrameDate(movie, range->to);
+    uint64_t start_date = SERGetFrameDate(movie, range->from),
+             end_date = SERGetFrameDate(movie, range->to);
     if (start_date == 0 || end_date == 0) return -1;
     if (end_date < start_date) return -1;
     if (start_date == end_date) return 0;
-    time_t start_t = videoTimeToUnixtime(start_date),
-           end_t = videoTimeToUnixtime(end_date);
+    time_t start_t = SERVideoTimeToUnixtime(start_date),
+           end_t = SERVideoTimeToUnixtime(end_date);
     return end_t - start_t;
 }
 
-int makeFilepath(char *dstfilepath, char *original_path, char *dir,
+static int makeFilepath(char *dstfilepath, char *original_path, char *dir,
     char *suffix, char *ext)
 {
     char *fname = basename(original_path);
     if (strlen(fname) == 0) {
-        logErr(LOG_TAG_FATAL "makeFilepath: `original_path` is a directory\n");
+        SERLogErr(LOG_TAG_FATAL
+            "makeFilepath: `original_path` is a directory\n");
         return 0;
     }
     if (dir == NULL) dir = "/tmp/";
@@ -261,18 +262,18 @@ int makeFilepath(char *dstfilepath, char *original_path, char *dir,
     return 1;
 }
 
-void freeWinJUPOSInfo(WinJUPOSInfo *info) {
+static void freeWinJUPOSInfo(WinJUPOSInfo *info) {
     if (info == NULL) return;
     if (info->observer != NULL) free(info->observer);
     if (info->image_info != NULL) free(info->image_info);
     free(info);
 }
 
-WinJUPOSInfo *getWinJUPOSInfo(char *filepath) {
+static WinJUPOSInfo *getWinJUPOSInfo(char *filepath) {
     /* WinJUPOS filename spec: YYYY-mm-dd-HHMM[_T]-Observer[-ImageInfo] */
     WinJUPOSInfo *info = malloc(sizeof(*info));
     if (info == NULL) {
-        logErr(LOG_TAG_FATAL "Out-of-memory!\n");
+        SERLogErr(LOG_TAG_FATAL "Out-of-memory!\n");
         return NULL;
     }
     memset((void*) info, 0, sizeof(*info));
@@ -357,7 +358,7 @@ invalid:
     return NULL;
 }
 
-size_t generateWinJUPOSFilename(char *dst, size_t max_size, time_t time,
+static size_t generateWinJUPOSFilename(char *dst, size_t max_size, time_t time,
     char *info, char *ext)
 {
     struct tm *tm = gmtime(&time);
@@ -389,12 +390,12 @@ size_t generateWinJUPOSFilename(char *dst, size_t max_size, time_t time,
     return size;
 }
 
-size_t generateWinJUPOSMovieFilename(char *dst, size_t max_size,
+static size_t generateWinJUPOSMovieFilename(char *dst, size_t max_size,
     SERMovie *movie, char* ext)
 {
     if (movie->warnings & WARN_BAD_FRAME_DATES) goto bad_dates;
-    time_t start_t = videoTimeToUnixtime(movie->firstFrameDate);
-    time_t end_t = videoTimeToUnixtime(movie->lastFrameDate);
+    time_t start_t = SERVideoTimeToUnixtime(movie->firstFrameDate);
+    time_t end_t = SERVideoTimeToUnixtime(movie->lastFrameDate);
     if (start_t <= 0 || end_t <= 0 || (end_t < start_t)) goto bad_dates;
     time_t mid_t = start_t + ((end_t - start_t) / 2);
     if (mid_t == 0) goto bad_dates;
@@ -426,13 +427,14 @@ size_t generateWinJUPOSMovieFilename(char *dst, size_t max_size,
     freeWinJUPOSInfo(wjinfo);
     return sz;
 bad_dates:
-    logErr(LOG_TAG_ERR "Cannot generate WinJUPOS filename: bad datetimes\n");
+    SERLogErr(LOG_TAG_ERR
+        "Cannot generate WinJUPOS filename: bad datetimes\n");
     *dst = '\0';
     return 0;
 }
 
 
-int makeMovieOutputPath(char *output_path, SERMovie *movie,
+static int makeMovieOutputPath(char *output_path, SERMovie *movie,
     SERFrameRange *range, char *dir)
 {
     char suffix_buffer[BUFLEN];
@@ -444,7 +446,7 @@ int makeMovieOutputPath(char *output_path, SERMovie *movie,
             using_wjupos = 1;
             filepath = wjfname;
         } else {
-            logErr("Could not generate WinJUPOS filename\n");
+            SERLogErr("Could not generate WinJUPOS filename\n");
             return 0;
         }
     }
@@ -470,13 +472,13 @@ int makeMovieOutputPath(char *output_path, SERMovie *movie,
     if (dir == NULL) dir = conf.output_dir;
     if (dir == NULL) dir = "/tmp/";
     if (!makeFilepath(output_path, filepath, dir, suffix, ".ser")) {
-        logErr("Failed to create temporary filepath\n");
+        SERLogErr("Failed to create temporary filepath\n");
         return 0;
     }
     return 1;
 }
 
-int determineSplitRanges(SERMovie *movie) {
+static int determineSplitRanges(SERMovie *movie) {
     assert(movie->header != NULL);
     char *err = NULL;
     char errmsg[1024] = {0};
@@ -581,9 +583,9 @@ int determineSplitRanges(SERMovie *movie) {
         range->to = 0;
         range->count = 0;
         for (i = 0; i < movie->header->uiFrameCount; i++) {
-            uint64_t datetime = readFrameDate(movie, i);
+            uint64_t datetime = SERGetFrameDate(movie, i);
             if (datetime == 0) goto invalid_datetime;
-            time_t frame_t = videoTimeToUnixtime(datetime);
+            time_t frame_t = SERVideoTimeToUnixtime(datetime);
             if (frame_t <= 0 || frame_t < previous_t) goto invalid_datetime;
             if (i == 0) range->from = i;
             else if (i == range->from) {
@@ -662,11 +664,11 @@ invalid_datetime:
         if (duration == 0) {
             duration = getFrameRangeDuration(movie, range);
             if (duration < 0) {
-                uint64_t start_date = readFrameDate(movie, range->from),
-                         end_date = readFrameDate(movie, range->to);
-                time_t start_t = videoTimeToUnixtime(start_date),
-                       end_t = videoTimeToUnixtime(end_date);
-                logErr(
+                uint64_t start_date = SERGetFrameDate(movie, range->from),
+                         end_date = SERGetFrameDate(movie, range->to);
+                time_t start_t = SERVideoTimeToUnixtime(start_date),
+                       end_t = SERVideoTimeToUnixtime(end_date);
+                SERLogErr(
                     LOG_TAG_FATAL
                     "End frame %d time %zu < start frame %d time %zu\n",
                     range->to, end_t, range->from, start_t
@@ -680,7 +682,7 @@ invalid_datetime:
         tot_frames_added += range->count;
     }
     if (tot_frames_added != movie->header->uiFrameCount) {
-        logErr(LOG_TAG_FATAL "not all frames added %d/%d\n",
+        SERLogErr(LOG_TAG_FATAL "not all frames added %d/%d\n",
             tot_frames_added, movie->header->uiFrameCount);
         assert(tot_frames_added == movie->header->uiFrameCount);
     }
@@ -693,13 +695,13 @@ max_split_count_exceeded:
         split_count, MAX_SPLIT_COUNT);
     err = errmsg;
 fail:
-    logErr(LOG_TAG_ERR "Unable to split movie");
-    if (err != NULL) logErr(": %s", err);
+    SERLogErr(LOG_TAG_ERR "Unable to split movie");
+    if (err != NULL) SERLogErr(": %s", err);
     fprintf(stderr, "\n");
     return 0;
 }
 
-void initConfig() {
+static void initConfig() {
     conf.frames_from = 0;
     conf.frames_to = 0;
     conf.frames_count = 0;
@@ -718,7 +720,7 @@ void initConfig() {
 }
 
 
-void printHelp(char **argv) {
+static void printHelp(char **argv) {
     fprintf(stderr, "Usage: %s [OPTIONS] SER_MOVIE\n\n", argv[0]);
     fprintf(stderr, "OPTIONS:\n\n");
     fprintf(stderr, "   --extract FRAME_RANGE    Extract frames\n");
@@ -758,11 +760,11 @@ void printHelp(char **argv) {
     fprintf(stderr, "\n");
 }
 
-int askForFileOverwrite(char *filepath) {
+static int askForFileOverwrite(char *filepath) {
     char c, answer = '\0';
     int count = 0;
 ask:
-    logWarn("File '%s' already exists.\n", filepath);
+    SERLogWarn("File '%s' already exists.\n", filepath);
     fprintf(stderr, "Overwrite it? (y/N) ");
     fflush(stderr);
     /*if (NULL == fgets(answer, sizeof(answer), stdin)) {
@@ -785,7 +787,7 @@ ask:
     }
 }
 
-int parseFrameRangeArgument (char *arg) {
+static int parseFrameRangeArgument (char *arg) {
     uint32_t from = 0, to = 0, count = 0, last_n = 0;
     int is_comma = 0;
     size_t arglen = strlen(arg);
@@ -824,7 +826,7 @@ int parseFrameRangeArgument (char *arg) {
     return 1;
 }
 
-int parseOptions(int argc, char **argv) {
+static int parseOptions(int argc, char **argv) {
     int i;
     if (argc == 1) {
         printHelp(argv);
@@ -918,26 +920,26 @@ invalid_split_arg:
     return -1;
 }
 
-void printPixelValue(SERMovie *movie, uint32_t frame_idx, uint32_t x,
+static void printPixelValue(SERMovie *movie, uint32_t frame_idx, uint32_t x,
     uint32_t y)
 {
     if (movie->warnings & WARN_INCOMPLETE_FRAMES) {
-        logErr(LOG_TAG_ERR "movie frames are incomplete\n");
+        SERLogErr(LOG_TAG_ERR "movie frames are incomplete\n");
         return;
     }
     assert(movie->header != NULL);
     if (frame_idx > movie->header->uiFrameCount) {
-        logErr(LOG_TAG_ERR "frame %d beyond movie frames (%d)\n",
+        SERLogErr(LOG_TAG_ERR "frame %d beyond movie frames (%d)\n",
             frame_idx, movie->header->uiFrameCount);
         return;
     }
-    SERFrame *frame = getFrame(movie, frame_idx);
+    SERFrame *frame = SERGetFrame(movie, frame_idx);
     if (frame == NULL) {
-        logErr(LOG_TAG_ERR "unable to get frame %d\n", frame_idx);
+        SERLogErr(LOG_TAG_ERR "unable to get frame %d\n", frame_idx);
         return;
     }
     SERPixelValue px;
-    if (getFramePixel(frame, x, y, &px)) {
+    if (SERGetFramePixel(frame, x, y, &px)) {
         if (frame->colorID < COLOR_RGB) {
             if (frame->pixelDepth > 8) printf("%d\n", px.int16);
             else printf("%d\n", px.int8);
@@ -948,29 +950,29 @@ void printPixelValue(SERMovie *movie, uint32_t frame_idx, uint32_t x,
                 printf("%d,%d,%d\n", px.rgb8.r, px.rgb8.g, px.rgb8.b);
         }
     }
-    releaseFrame(frame);
+    SERReleaseFrame(frame);
 }
 
-int performMovieCheck(SERMovie *movie, int *issues) {
+static int performMovieCheck(SERMovie *movie, int *issues) {
     assert(movie != NULL);
     int ok = 1, count = 0;
     SERPrintHeader("CHECK");
     printf("Checking for movie issues...\n");
     if (movie->header == NULL) {
-        logErr(LOG_TAG_FATAL "missing header\n");
+        SERLogErr(LOG_TAG_FATAL "missing header\n");
         return 0;
     }
-    size_t trailer_offs = getTrailerOffset(movie->header);
+    size_t trailer_offs = SERGetTrailerOffset(movie->header);
     uint32_t frame_c = movie->header->uiFrameCount;
     size_t expected_filesize = sizeof(SERHeader) +
-        (frame_c * getFrameSize(movie->header));
+        (frame_c * SERGetFrameSize(movie->header));
     if (movie->filesize > trailer_offs) {
         int has_valid_dates = 1;
         uint32_t i;
         uint64_t last_date = 0;
         expected_filesize += (frame_c * sizeof(uint64_t));
         for (i = 0; i < movie->header->uiFrameCount; i++) {
-            uint64_t date = readFrameDate(movie, i);
+            uint64_t date = SERGetFrameDate(movie, i);
             has_valid_dates = (last_date <= date);
             if (!has_valid_dates) break;
             last_date = date;
@@ -980,23 +982,23 @@ int performMovieCheck(SERMovie *movie, int *issues) {
         else if (!has_valid_dates) movie->warnings |= WARN_BAD_FRAME_DATES;
     }
     if (movie->filesize > expected_filesize) {
-        logWarn(LOG_TAG_WARN "%s\n", WARN_FILESIZE_MISMATCH_MSG);
+        SERLogWarn(LOG_TAG_WARN "%s\n", WARN_FILESIZE_MISMATCH_MSG);
         movie->warnings |= WARN_FILESIZE_MISMATCH;
     }
     if (movie->warnings != 0) {
-        int wcount = countMovieWarnings(movie->warnings);
-        logWarn("Found %d warning(s):\n", wcount);
+        int wcount = SERCountMovieWarnings(movie->warnings);
+        SERLogWarn("Found %d warning(s):\n", wcount);
         printMovieWarnings(movie->warnings);
         count += wcount;
     }
     ok = (count == 0);
     if (issues != NULL) *issues = count;
-    if (ok) logSuccess("Good, no issues found!\n\n");
-    else logWarn("Found %d issue(s)\n\n", count);
+    if (ok) SERLogSuccess("Good, no issues found!\n\n");
+    else SERLogWarn("Found %d issue(s)\n\n", count);
     return ok;
 }
 
-int determineFrameRange(SERHeader * header, SERFrameRange *range,
+static int determineFrameRange(SERHeader * header, SERFrameRange *range,
         int from, int to, int count, char **err)
 {
     int tot = header->uiFrameCount;
@@ -1021,7 +1023,7 @@ int determineFrameRange(SERHeader * header, SERFrameRange *range,
     return 1;
 }
 
-void printMovieWarnings(int warnings) {
+static void printMovieWarnings(int warnings) {
     size_t wlen = sizeof(warnings),
            msgcount = sizeof(warn_messages) / sizeof(char *), i;
     for (i = 0; i < wlen; i++) {
@@ -1029,12 +1031,12 @@ void printMovieWarnings(int warnings) {
         if (warnings & (1 << i)) {
             char *wmsg = warn_messages[i];
             if (wmsg == NULL) break;
-            logWarn(LOG_TAG_WARN "%s\n", wmsg);
+            SERLogWarn(LOG_TAG_WARN "%s\n", wmsg);
         }
     }
 }
 
-int writeHeaderToVideo(FILE *video, SERHeader *header) {
+static int writeHeaderToVideo(FILE *video, SERHeader *header) {
     fseek(video, 0, SEEK_SET);
     size_t nwritten = 0, totwritten = 0, maxbytes = sizeof(*header);
     size_t remain = maxbytes;
@@ -1050,7 +1052,7 @@ int writeHeaderToVideo(FILE *video, SERHeader *header) {
     return (totwritten == maxbytes);
 }
 
-int writeTrailerToVideo(FILE *video, uint64_t *datetimes, size_t size) {
+static int writeTrailerToVideo(FILE *video, uint64_t *datetimes, size_t size) {
     size_t nwritten = 0, totwritten = 0, remain = size;
     char *ptr = (char *) datetimes;
     while (totwritten < size) {
@@ -1068,12 +1070,12 @@ int writeTrailerToVideo(FILE *video, uint64_t *datetimes, size_t size) {
     return ok;
 }
 
-int appendFrameToVideo(FILE *video, SERMovie *srcmovie,
+static int appendFrameToVideo(FILE *video, SERMovie *srcmovie,
     int frame_idx, char **err)
 {
     SERHeader *srcheader = srcmovie->header;
     FILE *srcvideo = srcmovie->file;
-    size_t frame_sz = getFrameSize(srcheader), nread = 0, nwritten = 0,
+    size_t frame_sz = SERGetFrameSize(srcheader), nread = 0, nwritten = 0,
            totread = 0, totwritten = 0;
     char *buffer = NULL;
     if (frame_sz == 0) {
@@ -1086,7 +1088,7 @@ int appendFrameToVideo(FILE *video, SERMovie *srcmovie,
             *err = "out-of-memory (could not allocate frame bufer)";
         goto fail;
     }
-    long offset = getFrameOffset(srcheader, frame_idx);
+    long offset = SERGetFrameOffset(srcheader, frame_idx);
     if (fseek(srcvideo, offset, SEEK_SET) < 0) {
         if (err != NULL) *err = "frame beyond movie size, cannot read frame";
         goto fail;
@@ -1124,7 +1126,7 @@ fail:
     return 0;
 }
 
-int extractFramesFromVideo(SERMovie *movie, char *outputpath,
+static int extractFramesFromVideo(SERMovie *movie, char *outputpath,
     SERFrameRange *range)
 {
     char *err = NULL;
@@ -1140,14 +1142,14 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
         err = "missing source movie header";
         goto fail;
     }
-    new_header = duplicateHeader(header);
+    new_header = SERDuplicateHeader(header);
     if (new_header == NULL) goto fail;
     if (conf.break_movie != BREAK_FRAMES)
         new_header->uiFrameCount = count;
     int64_t utc_diff = header->ulDateTime_UTC - header->ulDateTime;
-    uint64_t first_frame_date = readFrameDate(movie, from);
+    uint64_t first_frame_date = SERGetFrameDate(movie, from);
     uint64_t first_frame_utc = first_frame_date;
-    uint64_t last_frame_date = readFrameDate(movie, to);
+    uint64_t last_frame_date = SERGetFrameDate(movie, to);
     if (first_frame_date == 0) {
         err = "unable to read first frame date";
         goto fail;
@@ -1173,7 +1175,7 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
     }
     ofile = fopen(outputpath, "w");
     if (ofile == NULL) {
-        logErr(LOG_TAG_ERR "Failed to open %s for writing\n", outputpath);
+        SERLogErr(LOG_TAG_ERR "Failed to open %s for writing\n", outputpath);
         err = "could not open output video for writing";
         goto fail;
     }
@@ -1184,7 +1186,7 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
         err = "failed to write header";
         goto fail;
     }
-    long offset = getFrameOffset(header, from);
+    long offset = SERGetFrameOffset(header, from);
     if (fseek(movie->file, offset, SEEK_SET) < 0) {
         err = "frame offset beyond movie length";
         goto fail;
@@ -1209,7 +1211,7 @@ int extractFramesFromVideo(SERMovie *movie, char *outputpath,
             fflush(stdout);
             goto fail;
         }
-        uint64_t datetime = readFrameDate(movie, frame_idx);
+        uint64_t datetime = SERGetFrameDate(movie, frame_idx);
         if (datetime == 0) {
             printf("\n");
             fflush(stdout);
@@ -1244,14 +1246,15 @@ fail:
     if (ofile != NULL) fclose(ofile);
     if (new_header != NULL) free(new_header);
     if (datetimes_buffer != NULL) free(datetimes_buffer);
-    logErr(LOG_TAG_ERR "Could not extract frames");
+    SERLogErr(LOG_TAG_ERR "Could not extract frames");
     if (err != NULL)
-        logErr(": %s (frame count: %d)", err, header->uiFrameCount);
+        SERLogErr(": %s (frame count: %d)", err, header->uiFrameCount);
     fprintf(stderr, "\n");
     return 0;
 }
 
-int cutFramesFromVideo(SERMovie *movie, char *outputpath, SERFrameRange *range)
+static int cutFramesFromVideo(SERMovie *movie, char *outputpath,
+    SERFrameRange *range)
 {
     char *err = NULL;
     SERHeader *new_header = NULL;
@@ -1271,7 +1274,7 @@ int cutFramesFromVideo(SERMovie *movie, char *outputpath, SERFrameRange *range)
         err = "frames to cut must be less than source frame count";
         goto fail;
     }
-    new_header = duplicateHeader(header);
+    new_header = SERDuplicateHeader(header);
     if (new_header == NULL) goto fail;
     tot_frames = movie->header->uiFrameCount - count;
     new_header->uiFrameCount = tot_frames;
@@ -1281,9 +1284,9 @@ int cutFramesFromVideo(SERMovie *movie, char *outputpath, SERFrameRange *range)
     if (to == src_last_frame) last_frame_idx = from;
     else last_frame_idx = src_last_frame;
     int64_t utc_diff = header->ulDateTime_UTC - header->ulDateTime;
-    uint64_t first_frame_date = readFrameDate(movie, first_frame_idx);
+    uint64_t first_frame_date = SERGetFrameDate(movie, first_frame_idx);
     uint64_t first_frame_utc = first_frame_date;
-    uint64_t last_frame_date = readFrameDate(movie, last_frame_idx);
+    uint64_t last_frame_date = SERGetFrameDate(movie, last_frame_idx);
     if (first_frame_date == 0) {
         err = "unable to read first frame date";
         goto fail;
@@ -1309,7 +1312,7 @@ int cutFramesFromVideo(SERMovie *movie, char *outputpath, SERFrameRange *range)
     }
     ofile = fopen(outputpath, "w");
     if (ofile == NULL) {
-        logErr(LOG_TAG_ERR "Failed to open %s for writing\n", outputpath);
+        SERLogErr(LOG_TAG_ERR "Failed to open %s for writing\n", outputpath);
         err = "could not open output video for writing";
         goto fail;
     }
@@ -1321,7 +1324,7 @@ int cutFramesFromVideo(SERMovie *movie, char *outputpath, SERFrameRange *range)
         err = "failed to write header";
         goto fail;
     }
-    long offset = getFrameOffset(header, from);
+    long offset = SERGetFrameOffset(header, from);
     if (fseek(movie->file, offset, SEEK_SET) < 0) {
         err = "frame offset beyond movie length";
         goto fail;
@@ -1342,7 +1345,7 @@ int cutFramesFromVideo(SERMovie *movie, char *outputpath, SERFrameRange *range)
             fflush(stdout);
             goto fail;
         }
-        uint64_t datetime = readFrameDate(movie, frame_idx);
+        uint64_t datetime = SERGetFrameDate(movie, frame_idx);
         if (datetime == 0) {
             printf("\n");
             fflush(stdout);
@@ -1360,7 +1363,7 @@ int cutFramesFromVideo(SERMovie *movie, char *outputpath, SERFrameRange *range)
             fflush(stdout);
             goto fail;
         }
-        uint64_t datetime = readFrameDate(movie, i);
+        uint64_t datetime = SERGetFrameDate(movie, i);
         if (datetime == 0) {
             printf("\n");
             fflush(stdout);
@@ -1389,13 +1392,13 @@ fail:
     if (new_header != NULL) free(new_header);
     if (datetimes_buffer != NULL) free(datetimes_buffer);
     if (err != NULL) {
-        logErr("Could not cut frames: %s (frame count: %d)\n",
+        SERLogErr("Could not cut frames: %s (frame count: %d)\n",
             err, header->uiFrameCount);
-    } else logErr("Could not cut frames\n");
+    } else SERLogErr("Could not cut frames\n");
     return 0;
 }
 
-int splitMovie(SERMovie *movie) {
+static int splitMovie(SERMovie *movie) {
     char *err = NULL;
     char errmsg[1024] = {0};
     if (split_count == 0) goto fail;
@@ -1436,13 +1439,13 @@ int splitMovie(SERMovie *movie) {
     if (err != NULL) goto fail;
     return 1;
 fail:
-    logErr("Failed to split movie");
-    if (err != NULL) logErr(": %s", err);
+    SERLogErr("Failed to split movie");
+    if (err != NULL) SERLogErr(": %s", err);
     fprintf(stderr, "\n");
     return 0;
 }
 
-void printMetadata(SERHeader *header) {
+static void printMetadata(SERHeader *header) {
     char fileID[15];
     char observer[40];
     char scope[40];
@@ -1451,8 +1454,8 @@ void printMetadata(SERHeader *header) {
     strncpy(observer, (const char*) header->sObserver, 40);
     strncpy(camera, (const char*) header->sInstrument, 40);
     strncpy(scope, (const char*) header->sTelescope, 40);
-    time_t unix_t = videoTimeToUnixtime(header->ulDateTime);
-    time_t unix_t_utc = videoTimeToUnixtime(header->ulDateTime_UTC);
+    time_t unix_t = SERVideoTimeToUnixtime(header->ulDateTime);
+    time_t unix_t_utc = SERVideoTimeToUnixtime(header->ulDateTime_UTC);
     fileID[14] = '\0';
     observer[39] = '\0';
     scope[39] = '\0';
@@ -1474,18 +1477,18 @@ void printMetadata(SERHeader *header) {
     printFieldValuePair("Timestamp (UTC)", "%s", stripped_ctime(&unix_t_utc));
 }
 
-void printMovieInfo(SERMovie *movie) {
+static void printMovieInfo(SERMovie *movie) {
     SERPrintHeader("MOVIE INFO");
     if (movie->header != NULL) printMetadata(movie->header);
     printFieldValuePair("First Frame Date", "%llu", movie->firstFrameDate);
     printFieldValuePair("Last Frame Date", "%llu", movie->lastFrameDate);
     if (movie->firstFrameDate > 0) {
-        time_t unix_t = videoTimeToUnixtime(movie->firstFrameDate);
+        time_t unix_t = SERVideoTimeToUnixtime(movie->firstFrameDate);
         printFieldValuePair("First Frame Timestamp", "%s",
             stripped_ctime(&unix_t));
     }
     if (movie->firstFrameDate > 0) {
-        time_t unix_t = videoTimeToUnixtime(movie->lastFrameDate);
+        time_t unix_t = SERVideoTimeToUnixtime(movie->lastFrameDate);
         printFieldValuePair("Last Frame Timestamp", "%s",
             stripped_ctime(&unix_t));
     }
@@ -1503,12 +1506,14 @@ void printMovieInfo(SERMovie *movie) {
     fmt = "%ld%s";
     if (getFilesizeStr(fsize, BUFLEN, movie->filesize) > 0) fmt = "%ld (%s)";
     printFieldValuePair("Filesize", fmt, movie->filesize, fsize);
-    if (movie->warnings != 0)
-        logWarn("Found %d warning(s)\n", countMovieWarnings(movie->warnings));
+    if (movie->warnings != 0) {
+        SERLogWarn("Found %d warning(s)\n",
+            SERCountMovieWarnings(movie->warnings));
+    }
     printf("\n");
 }
 
-int logToJSON(FILE *json_file, SERMovie *movie)
+static int logToJSON(FILE *json_file, SERMovie *movie)
 {
     char fileID[15];
     char observer[40];
@@ -1548,13 +1553,13 @@ int logToJSON(FILE *json_file, SERMovie *movie)
         movie->lastFrameDate);
 
     fprintf(json_file, "    \"unixtime\": %zu,\n",
-        videoTimeToUnixtime(header->ulDateTime));
+        SERVideoTimeToUnixtime(header->ulDateTime));
     fprintf(json_file, "    \"unixtimeUTC\": %zu,\n",
-        videoTimeToUnixtime(header->ulDateTime_UTC));
+        SERVideoTimeToUnixtime(header->ulDateTime_UTC));
     fprintf(json_file, "    \"firstFrameUnixtime\": %zu,\n",
-        videoTimeToUnixtime(movie->firstFrameDate));
+        SERVideoTimeToUnixtime(movie->firstFrameDate));
     fprintf(json_file, "    \"lastFrameUnixtime\": %zu,\n",
-        videoTimeToUnixtime(movie->lastFrameDate));
+        SERVideoTimeToUnixtime(movie->lastFrameDate));
     fprintf(json_file, "    \"duration\": %d,\n", movie->duration);
 
     fprintf(json_file, "    \"warnings\": [");
@@ -1591,9 +1596,9 @@ int main(int argc, char **argv) {
         conf.output_dir = conf.output_path;
         conf.output_path = NULL;
     }
-    SERMovie *movie = openMovie(filepath);
+    SERMovie *movie = SEROpenMovie(filepath);
     if (movie == NULL) {
-        logErr(LOG_TAG_ERR "Could not open movie at: '%s'\n", filepath);
+        SERLogErr(LOG_TAG_ERR "Could not open movie at: '%s'\n", filepath);
         goto err;
     }
     printMovieInfo(movie);
@@ -1610,9 +1615,9 @@ int main(int argc, char **argv) {
         SERFrameRange range;
         char *errmsg = NULL;
         if (!determineFrameRange(header, &range, from, to, count, &errmsg)) {
-            logErr(LOG_TAG_ERR "Invalid frame range: ");
+            SERLogErr(LOG_TAG_ERR "Invalid frame range: ");
             if (errmsg == NULL) errmsg = "could not determine frame range";
-            logErr("%s\n", errmsg);
+            SERLogErr("%s\n", errmsg);
             goto err;
         }
         char *output_path = conf.output_path;
@@ -1623,11 +1628,11 @@ int main(int argc, char **argv) {
         else if (conf.action == ACTION_CUT)
             ok = cutFramesFromVideo(movie, output_path, &range);
         if (!ok) goto err;
-        closeMovie(movie);
+        SERCloseMovie(movie);
         return 0;
     } else if (conf.action == ACTION_SPLIT && check_succeded) {
         if (!determineSplitRanges(movie)) {
-            logErr("Failed to split movie!\n");
+            SERLogErr("Failed to split movie!\n");
             goto err;
         }
         if (!splitMovie(movie)) goto err;
@@ -1641,7 +1646,7 @@ int main(int argc, char **argv) {
         if (do_log) {
             FILE *json = fopen(json_filename, "w");
             if (json == NULL) {
-                logErr(LOG_TAG_ERR "Could not open '%s' for writing!\n",
+                SERLogErr(LOG_TAG_ERR "Could not open '%s' for writing!\n",
                     json_filename);
                 return 1;
             }
@@ -1649,9 +1654,9 @@ int main(int argc, char **argv) {
             printf("JSON saved to: '%s'\n", json_filename);
         }
     }
-    closeMovie(movie);
+    SERCloseMovie(movie);
     return 0;
 err:
-    closeMovie(movie);
+    SERCloseMovie(movie);
     return 1;
 }

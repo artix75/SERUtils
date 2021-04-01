@@ -31,14 +31,14 @@
 
 /* Utils */
 
-void swapint16(void *n) {
+static void swapint16(void *n) {
     unsigned char *x = n, t;
     t = x[0];
     x[0] = x[1];
     x[1] = t;
 }
 
-void swapint32(void *n) {
+static void swapint32(void *n) {
     unsigned char *x = n, t;
     t = x[0];
     x[0] = x[3];
@@ -48,7 +48,7 @@ void swapint32(void *n) {
     x[2] = t;
 }
 
-void swapint64(void *n) {
+static void swapint64(void *n) {
     unsigned char *x = n, t;
     t = x[0];
     x[0] = x[7];
@@ -63,6 +63,71 @@ void swapint64(void *n) {
     x[3] = x[4];
     x[4] = t;
 }
+
+static void swapMovieHeader(SERHeader *header) {
+    swapint32(&header->uiLuID);
+    swapint32(&header->uiColorID);
+    swapint32(&header->uiLittleEndian);
+    swapint32(&header->uiImageWidth);
+    swapint32(&header->uiImageHeight);
+    swapint32(&header->uiPixelDepth);
+    swapint32(&header->uiFrameCount);
+    swapint64(&header->ulDateTime);
+    swapint64(&header->ulDateTime_UTC);
+}
+
+/* Helpers */
+
+static FILE *openMovieFileForReading(SERMovie *movie, char **err) {
+    if (movie->file != NULL) return movie->file;
+    if (movie->filepath == NULL) {
+        if (err != NULL) *err = "Missing movie filepath";
+        return NULL;
+    }
+    FILE *video = fopen(movie->filepath, "r");
+    if (video == NULL) {
+        if (err != NULL) *err = "Could not open movie file for reading";
+        return NULL;
+    }
+    movie->file = video;
+    return video;
+}
+
+static int parseHeader(SERMovie *movie) {
+    if (movie->header != NULL) return 1;
+    movie->header = malloc(sizeof(SERHeader));
+    if (movie->header == NULL) {
+        fprintf(stderr, "Out-of-memory: failed to allocate movie header\n");
+        return 0;
+    }
+    if (movie->file == NULL) {
+        char *err = NULL;
+        if (openMovieFileForReading(movie, &err) == NULL) {
+            if (err == NULL) err = "Failed to open movie file";
+            SERLogErr(LOG_TAG_ERR "%s\n", err);
+            return 0;
+        }
+    }
+    size_t hdrsize = sizeof(SERHeader);
+    size_t totread = 0, nread = 0;
+    char *hdrptr = (char *) movie->header;
+    fseek(movie->file, 0, SEEK_SET);
+    while (totread < hdrsize) {
+        nread = fread((void *) hdrptr, 1, hdrsize, movie->file);
+        if (nread <= 0) {
+            SERLogErr(LOG_TAG_ERR "Failed to read SER movie header\n");
+            return 0;
+        }
+        if (totread == hdrsize) break;
+        totread += nread;
+        hdrptr += nread;
+    }
+    if (IS_BIG_ENDIAN) swapMovieHeader(movie->header);
+    printf("Read %lu header bytes\n\n", totread);
+    return 1;
+}
+
+/* Library functions */
 
 char *SERGetColorString(uint32_t colorID) {
     switch (colorID) {
@@ -81,89 +146,77 @@ char *SERGetColorString(uint32_t colorID) {
     return "UNKNOWN";
 }
 
-time_t videoTimeToUnixtime(uint64_t video_t) {
+time_t SERVideoTimeToUnixtime(uint64_t video_t) {
     uint64_t seconds = video_t / TIMEUNITS_PER_SEC;
     return seconds - SECS_UNTIL_UNIXTIME;
 }
 
-int getNumberOfPlanes(SERHeader *header) {
+int SERGetNumberOfPlanes(SERHeader *header) {
     uint32_t color = header->uiColorID;
     if (color >= COLOR_RGB) return 3;
     return 1;
 }
 
-int getBytesPerPixel(SERHeader *header) {
+int SERGetBytesPerPixel(SERHeader *header) {
     uint32_t depth = header->uiPixelDepth;
     if (depth < 1) return 0;
-    int planes = getNumberOfPlanes(header);
+    int planes = SERGetNumberOfPlanes(header);
     if (depth <= 8) return planes;
     else return (2 * planes);
 }
 
-size_t getFrameSize(SERHeader *header) {
-    int bytes_per_px = getBytesPerPixel(header);
+size_t SERGetFrameSize(SERHeader *header) {
+    int bytes_per_px = SERGetBytesPerPixel(header);
     return header->uiImageWidth * header->uiImageHeight * bytes_per_px;
 }
 
-long getFrameOffset(SERHeader *header, int frame_idx) {
-    return sizeof(SERHeader) + (frame_idx * getFrameSize(header));
+long SERGetFrameOffset(SERHeader *header, int frame_idx) {
+    return sizeof(SERHeader) + (frame_idx * SERGetFrameSize(header));
 }
 
-long getTrailerOffset(SERHeader *header) {
+long SERGetTrailerOffset(SERHeader *header) {
     uint32_t frame_idx = header->uiFrameCount;
-    return getFrameOffset(header, frame_idx);
+    return SERGetFrameOffset(header, frame_idx);
 }
 
-void swapMovieHeader(SERHeader *header) {
-    swapint32(&header->uiLuID);
-    swapint32(&header->uiColorID);
-    swapint32(&header->uiLittleEndian);
-    swapint32(&header->uiImageWidth);
-    swapint32(&header->uiImageHeight);
-    swapint32(&header->uiPixelDepth);
-    swapint32(&header->uiFrameCount);
-    swapint64(&header->ulDateTime);
-    swapint64(&header->ulDateTime_UTC);
-}
-
-void releaseFrame(SERFrame *frame) {
+void SERReleaseFrame(SERFrame *frame) {
     if (frame == NULL) return;
     if (frame->data != NULL) free(frame->data);
     free(frame);
 }
 
-SERFrame *getFrame(SERMovie *movie, uint32_t frame_idx) {
+SERFrame *SERGetFrame(SERMovie *movie, uint32_t frame_idx) {
     SERFrame *frame = NULL;
     assert(movie->header != NULL);
     if (frame_idx >= movie->header->uiFrameCount) {
-        logErr(LOG_TAG_ERR "Frame index %d beyond movie frames (%d)\n",
+        SERLogErr(LOG_TAG_ERR "Frame index %d beyond movie frames (%d)\n",
             frame_idx, movie->header->uiFrameCount);
         return NULL;
     }
     frame = malloc(sizeof(*frame));
     if (frame == NULL) {
-        logErr(LOG_TAG_FATAL "Out-of-memory\n");
+        SERLogErr(LOG_TAG_FATAL "Out-of-memory\n");
         return NULL;
     }
     memset(frame, 0, sizeof(*frame));
-    frame->size = getFrameSize(movie->header);
+    frame->size = SERGetFrameSize(movie->header);
     size_t offset_start = sizeof(SERHeader) + (frame_idx * frame->size);
     size_t offset_end = offset_start + frame->size;
     if (movie->filesize < offset_start) {
-        logErr(LOG_TAG_ERR
+        SERLogErr(LOG_TAG_ERR
             "Missing frame at index %d, movie frames incomplete\n",
             frame_idx
         );
         goto fail;
     } else if (movie->filesize < offset_end) {
-        logErr(LOG_TAG_ERR, "Incomplete data for frame %d\n", frame_idx);
+        SERLogErr(LOG_TAG_ERR, "Incomplete data for frame %d\n", frame_idx);
         goto fail;
     }
     frame->id = frame_idx + 1;
     frame->index = frame_idx;
-    frame->datetime = readFrameDate(movie, frame_idx);
+    frame->datetime = SERGetFrameDate(movie, frame_idx);
     if (frame->datetime > 0)
-        frame->unixtime = videoTimeToUnixtime(frame->datetime);
+        frame->unixtime = SERVideoTimeToUnixtime(frame->datetime);
     else frame->unixtime = 0;
     frame->littleEndian = movie->header->uiLittleEndian;
     frame->pixelDepth = movie->header->uiPixelDepth;
@@ -172,11 +225,11 @@ SERFrame *getFrame(SERMovie *movie, uint32_t frame_idx) {
     frame->height = movie->header->uiImageHeight;
     frame->data = malloc(frame->size);
     if (frame->data == NULL) {
-        logErr(LOG_TAG_FATAL "Out-of-memory\n");
+        SERLogErr(LOG_TAG_FATAL "Out-of-memory\n");
         goto fail;
     }
     if (fseek(movie->file, offset_start, SEEK_SET) < 0) {
-        logErr(LOG_TAG_ERR, "Failed to read frame %d\n", frame_idx);
+        SERLogErr(LOG_TAG_ERR, "Failed to read frame %d\n", frame_idx);
         goto fail;
     }
     size_t nread = 0, totread = 0, remain = frame->size;
@@ -189,25 +242,25 @@ SERFrame *getFrame(SERMovie *movie, uint32_t frame_idx) {
         p += nread;
     }
     if (totread != frame->size) {
-        logErr(LOG_TAG_ERR, "Failed to read frame %d\n", frame_idx);
+        SERLogErr(LOG_TAG_ERR, "Failed to read frame %d\n", frame_idx);
         goto fail;
     }
     return frame;
 fail:
-    if (frame != NULL) releaseFrame(frame);
+    if (frame != NULL) SERReleaseFrame(frame);
     return NULL;
 }
 
-int getFramePixel(SERFrame *frame, uint32_t x, uint32_t y,
+int SERGetFramePixel(SERFrame *frame, uint32_t x, uint32_t y,
                   SERPixelValue *value)
 {
     assert(value != NULL);
     if (frame->data == NULL) {
-        logErr("Missing data for frame %d\n", frame->id);
+        SERLogErr("Missing data for frame %d\n", frame->id);
         return 0;
     }
     if (x >= frame->width || y >= frame->height) {
-        logErr("Pixel %d,%d aoutside of frame %d coordinates: %d,%d\n",
+        SERLogErr("Pixel %d,%d aoutside of frame %d coordinates: %d,%d\n",
             x, y, frame->id, frame->width, frame->height
         );
         return 0;
@@ -282,63 +335,14 @@ int getFramePixel(SERFrame *frame, uint32_t x, uint32_t y,
     return 1;
 }
 
-FILE *openMovieFileForReading(SERMovie *movie, char **err) {
-    if (movie->file != NULL) return movie->file;
-    if (movie->filepath == NULL) {
-        if (err != NULL) *err = "Missing movie filepath";
-        return NULL;
-    }
-    FILE *video = fopen(movie->filepath, "r");
-    if (video == NULL) {
-        if (err != NULL) *err = "Could not open movie file for reading";
-        return NULL;
-    }
-    movie->file = video;
-    return video;
-}
-
-int parseHeader(SERMovie *movie) {
-    if (movie->header != NULL) return 1;
-    movie->header = malloc(sizeof(SERHeader));
-    if (movie->header == NULL) {
-        fprintf(stderr, "Out-of-memory: failed to allocate movie header\n");
-        return 0;
-    }
-    if (movie->file == NULL) {
-        char *err = NULL;
-        if (openMovieFileForReading(movie, &err) == NULL) {
-            if (err == NULL) err = "Failed to open movie file";
-            logErr(LOG_TAG_ERR "%s\n", err);
-            return 0;
-        }
-    }
-    size_t hdrsize = sizeof(SERHeader);
-    size_t totread = 0, nread = 0;
-    char *hdrptr = (char *) movie->header;
-    fseek(movie->file, 0, SEEK_SET);
-    while (totread < hdrsize) {
-        nread = fread((void *) hdrptr, 1, hdrsize, movie->file);
-        if (nread <= 0) {
-            logErr(LOG_TAG_ERR "Failed to read SER movie header\n");
-            return 0;
-        }
-        if (totread == hdrsize) break;
-        totread += nread;
-        hdrptr += nread;
-    }
-    if (IS_BIG_ENDIAN) swapMovieHeader(movie->header);
-    printf("Read %lu header bytes\n\n", totread);
-    return 1;
-}
-
-uint64_t readFrameDate(SERMovie *movie, long idx) {
+uint64_t SERGetFrameDate(SERMovie *movie, long idx) {
     uint64_t date = 0;
     SERHeader *header = movie->header;
     if (header == NULL && !parseHeader(movie)) {
         return date;
     }
     if (idx >= header->uiFrameCount) return date;
-    long offset = getTrailerOffset(header);
+    long offset = SERGetTrailerOffset(header);
     offset += (idx * sizeof(uint64_t));
     fseek(movie->file, offset, SEEK_SET);
     char *ptr = (char *) &date;
@@ -351,24 +355,24 @@ uint64_t readFrameDate(SERMovie *movie, long idx) {
     return date;
 }
 
-uint64_t readFirstFrameDate(SERMovie *movie) {
-    return readFrameDate(movie, 0);
+uint64_t SERGetFirstFrameDate(SERMovie *movie) {
+    return SERGetFrameDate(movie, 0);
 }
 
-uint64_t readLastFrameDate(SERMovie *movie) {
+uint64_t SERGetLastFrameDate(SERMovie *movie) {
     if (movie->header == NULL && !parseHeader(movie)) return 0;
     long idx = movie->header->uiFrameCount - 1;
-    return readFrameDate(movie, idx);
+    return SERGetFrameDate(movie, idx);
 }
 
-SERHeader *duplicateHeader(SERHeader *srcheader) {
+SERHeader *SERDuplicateHeader(SERHeader *srcheader) {
     SERHeader *dup = malloc(sizeof(*srcheader));
     if (dup == NULL) return NULL;
     memcpy(dup, srcheader, sizeof(*srcheader));
     return dup;
 }
 
-int countMovieWarnings(int warnings) {
+int SERCountMovieWarnings(int warnings) {
     size_t len = sizeof(warnings), i;
     int count = 0;
     for (i = 0; i < len; i++) {
@@ -377,14 +381,14 @@ int countMovieWarnings(int warnings) {
     return count;
 }
 
-void closeMovie(SERMovie *movie) {
+void SERCloseMovie(SERMovie *movie) {
     if (movie == NULL) return;
     if (movie->header != NULL) free(movie->header);
     if (movie->file != NULL) fclose(movie->file);
     free(movie);
 }
 
-SERMovie *openMovie(char *filepath) {
+SERMovie *SEROpenMovie(char *filepath) {
     if (filepath == NULL) return NULL;
     SERMovie *movie = malloc(sizeof(SERMovie));
     if (movie == NULL) {
@@ -397,18 +401,18 @@ SERMovie *openMovie(char *filepath) {
     movie->file = openMovieFileForReading(movie, &err);
     if (movie->file == NULL) {
         if (err == NULL) err = "failed to open movie file";
-        logErr(LOG_TAG_ERR "%s\n", err);
-        closeMovie(movie);
+        SERLogErr(LOG_TAG_ERR "%s\n", err);
+        SERCloseMovie(movie);
         return NULL;
     }
     if (!parseHeader(movie)) {
-        logErr(LOG_TAG_ERR "Failed to parse movie header\n");
-        closeMovie(movie);
+        SERLogErr(LOG_TAG_ERR "Failed to parse movie header\n");
+        SERCloseMovie(movie);
         return NULL;
     }
     if (strcmp(SER_FILE_ID, movie->header->sFileID) != 0) {
-        logErr(LOG_TAG_ERR "File is not a SER movie file\n");
-        closeMovie(movie);
+        SERLogErr(LOG_TAG_ERR "File is not a SER movie file\n");
+        SERCloseMovie(movie);
         return NULL;
     }
     movie->warnings = 0;
@@ -417,7 +421,7 @@ SERMovie *openMovie(char *filepath) {
     movie->filesize = ftell(movie->file);
     fseek(movie->file, 0, SEEK_SET);
     uint32_t frame_c = movie->header->uiFrameCount;
-    size_t trailer_offset = getTrailerOffset(movie->header),
+    size_t trailer_offset = SERGetTrailerOffset(movie->header),
            expected_trailer_size = (frame_c * sizeof(uint64_t)),
          trailer_size = 0;
     if (movie->filesize < trailer_offset) {
@@ -428,8 +432,8 @@ SERMovie *openMovie(char *filepath) {
         if (trailer_size < expected_trailer_size)
             movie->warnings |= WARN_INCOMPLETE_TRAILER;
     }
-    movie->firstFrameDate = readFirstFrameDate(movie);
-    movie->lastFrameDate = readLastFrameDate(movie);
+    movie->firstFrameDate = SERGetFirstFrameDate(movie);
+    movie->lastFrameDate = SERGetLastFrameDate(movie);
     if (movie->lastFrameDate > movie->firstFrameDate) {
         uint64_t duration = movie->lastFrameDate - movie->firstFrameDate;
         duration /= TIMEUNITS_PER_SEC;
@@ -439,5 +443,3 @@ SERMovie *openMovie(char *filepath) {
 has_warns:
     return movie;
 }
-
-
