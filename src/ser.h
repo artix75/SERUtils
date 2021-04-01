@@ -57,13 +57,14 @@
 #define WARN_FILESIZE_MISMATCH_MSG  \
     "movie file size does not match header data"
 
-#ifndef PATH_MAX
-#define PATH_MAX 4096
-#endif
-
-#define BUFLEN 255
-
 #define SER_FILE_ID "LUCAM-RECORDER"
+
+#define SERMovieHasTrailer(movie) \
+    (movie->filesize > SERGetTrailerOffset(movie->header))
+#define SERGetFrameCount(movie) \
+    (movie->header->uiFrameCount)
+#define SERGetLastFrameIndex(movie) \
+    (SERGetFrameCount(movie) - 1)
 
 #pragma pack(1)
 

@@ -48,6 +48,12 @@
 #define BREAK_DATES         2
 #define BREAK_DATE_ORDER    3
 
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+#define BUFLEN 255
+
 #define getRangeCount(r) (1 + (r->to - r->from));
 #define updateRangeCount(r) do {\
     assert(r->to >= r->from);\
@@ -482,9 +488,9 @@ static int determineSplitRanges(SERMovie *movie) {
     assert(movie->header != NULL);
     char *err = NULL;
     char errmsg[1024] = {0};
-    uint32_t frames_to_add = movie->header->uiFrameCount,
+    uint32_t frames_to_add = SERGetFrameCount(movie),
              frames_added = 0, ranges_added = 0, last_frame_added = 0,
-             last_movie_frame = movie->header->uiFrameCount - 1, i;
+             last_movie_frame = SERGetLastFrameIndex(movie), i;
     time_t chuncks_duration[MAX_SPLIT_COUNT] = {0};
     if (conf.split_amount <= 0) {
         err = "invalid value";
@@ -497,7 +503,7 @@ static int determineSplitRanges(SERMovie *movie) {
     uint32_t min_src_frames = (
         MIN_SPLIT_FRAMES_PER_CHUNCK + (MIN_SPLIT_FRAMES_PER_CHUNCK / 2)
     );
-    if (movie->header->uiFrameCount <= min_src_frames) {
+    if (SERGetFrameCount(movie) <= min_src_frames) {
         sprintf(errmsg, "at least %d frames needed in source movie",
             min_src_frames);
         err = errmsg;
@@ -506,7 +512,7 @@ static int determineSplitRanges(SERMovie *movie) {
     if (conf.split_mode == SPLIT_MODE_COUNT) {
         split_count = conf.split_amount;
         if (split_count > MAX_SPLIT_COUNT) goto max_split_count_exceeded;
-        uint32_t frames_per_movie = movie->header->uiFrameCount / split_count,
+        uint32_t frames_per_movie = SERGetFrameCount(movie) / split_count,
                  frames_added = 0, ranges_added = 0;
         if (frames_per_movie < MIN_SPLIT_FRAMES_PER_CHUNCK) {
             sprintf(errmsg,
@@ -519,8 +525,8 @@ static int determineSplitRanges(SERMovie *movie) {
         for (i = 0; i < split_count; i++) {
             uint32_t from = i * frames_per_movie;
             uint32_t to = from + frames_per_movie - 1;
-            if (to >= movie->header->uiFrameCount) {
-                to = movie->header->uiFrameCount - 1;
+            if (to >= SERGetFrameCount(movie)) {
+                to = SERGetLastFrameIndex(movie);
                 break;
             }
             uint32_t count = 1 + (to - from);
@@ -531,10 +537,10 @@ static int determineSplitRanges(SERMovie *movie) {
             frames_added += count;
             ranges_added++;
         }
-        if (frames_added < movie->header->uiFrameCount) {
+        if (frames_added < SERGetFrameCount(movie)) {
             SERFrameRange *range = splitRanges + ranges_added;
             range->from = frames_added;
-            range->to = movie->header->uiFrameCount - 1;
+            range->to = SERGetLastFrameIndex(movie);
             updateRangeCount(range);
             frames_added += range->count;
             if (range->count < MIN_SPLIT_FRAMES_PER_CHUNCK) {
@@ -582,7 +588,7 @@ static int determineSplitRanges(SERMovie *movie) {
         range->from = 0;
         range->to = 0;
         range->count = 0;
-        for (i = 0; i < movie->header->uiFrameCount; i++) {
+        for (i = 0; i < SERGetFrameCount(movie); i++) {
             uint64_t datetime = SERGetFrameDate(movie, i);
             if (datetime == 0) goto invalid_datetime;
             time_t frame_t = SERVideoTimeToUnixtime(datetime);
@@ -681,10 +687,10 @@ invalid_datetime:
             i, range->from, range->to, range->count, duration);
         tot_frames_added += range->count;
     }
-    if (tot_frames_added != movie->header->uiFrameCount) {
+    if (tot_frames_added != SERGetFrameCount(movie)) {
         SERLogErr(LOG_TAG_FATAL "not all frames added %d/%d\n",
-            tot_frames_added, movie->header->uiFrameCount);
-        assert(tot_frames_added == movie->header->uiFrameCount);
+            tot_frames_added, SERGetFrameCount(movie));
+        assert(tot_frames_added == SERGetFrameCount(movie));
     }
     printf("Average frames per chunck: %d\n", (tot_frames_added / split_count));
     printf("Average seconds per chunck: %ld\n\n",
@@ -928,9 +934,9 @@ static void printPixelValue(SERMovie *movie, uint32_t frame_idx, uint32_t x,
         return;
     }
     assert(movie->header != NULL);
-    if (frame_idx > movie->header->uiFrameCount) {
+    if (frame_idx > SERGetFrameCount(movie)) {
         SERLogErr(LOG_TAG_ERR "frame %d beyond movie frames (%d)\n",
-            frame_idx, movie->header->uiFrameCount);
+            frame_idx, SERGetFrameCount(movie));
         return;
     }
     SERFrame *frame = SERGetFrame(movie, frame_idx);
@@ -963,7 +969,7 @@ static int performMovieCheck(SERMovie *movie, int *issues) {
         return 0;
     }
     size_t trailer_offs = SERGetTrailerOffset(movie->header);
-    uint32_t frame_c = movie->header->uiFrameCount;
+    uint32_t frame_c = SERGetFrameCount(movie);
     size_t expected_filesize = sizeof(SERHeader) +
         (frame_c * SERGetFrameSize(movie->header));
     if (movie->filesize > trailer_offs) {
@@ -971,7 +977,7 @@ static int performMovieCheck(SERMovie *movie, int *issues) {
         uint32_t i;
         uint64_t last_date = 0;
         expected_filesize += (frame_c * sizeof(uint64_t));
-        for (i = 0; i < movie->header->uiFrameCount; i++) {
+        for (i = 0; i < SERGetFrameCount(movie); i++) {
             uint64_t date = SERGetFrameDate(movie, i);
             has_valid_dates = (last_date <= date);
             if (!has_valid_dates) break;
@@ -1270,15 +1276,15 @@ static int cutFramesFromVideo(SERMovie *movie, char *outputpath,
         err = "missing source movie header";
         goto fail;
     }
-    if (count >= movie->header->uiFrameCount) {
+    if (count >= SERGetFrameCount(movie)) {
         err = "frames to cut must be less than source frame count";
         goto fail;
     }
     new_header = SERDuplicateHeader(header);
     if (new_header == NULL) goto fail;
-    tot_frames = movie->header->uiFrameCount - count;
+    tot_frames = SERGetFrameCount(movie) - count;
     new_header->uiFrameCount = tot_frames;
-    src_last_frame = (movie->header->uiFrameCount - 1);
+    src_last_frame = SERGetLastFrameIndex(movie);
     if (from == 0) first_frame_idx = to;
     else first_frame_idx = 0;
     if (to == src_last_frame) last_frame_idx = from;

@@ -188,9 +188,9 @@ void SERReleaseFrame(SERFrame *frame) {
 SERFrame *SERGetFrame(SERMovie *movie, uint32_t frame_idx) {
     SERFrame *frame = NULL;
     assert(movie->header != NULL);
-    if (frame_idx >= movie->header->uiFrameCount) {
+    if (frame_idx >= SERGetFrameCount(movie)) {
         SERLogErr(LOG_TAG_ERR "Frame index %d beyond movie frames (%d)\n",
-            frame_idx, movie->header->uiFrameCount);
+            frame_idx, SERGetFrameCount(movie));
         return NULL;
     }
     frame = malloc(sizeof(*frame));
@@ -361,7 +361,7 @@ uint64_t SERGetFirstFrameDate(SERMovie *movie) {
 
 uint64_t SERGetLastFrameDate(SERMovie *movie) {
     if (movie->header == NULL && !parseHeader(movie)) return 0;
-    long idx = movie->header->uiFrameCount - 1;
+    long idx = SERGetFrameCount(movie) - 1;
     return SERGetFrameDate(movie, idx);
 }
 
@@ -420,7 +420,7 @@ SERMovie *SEROpenMovie(char *filepath) {
     fseek(movie->file, 0, SEEK_END);
     movie->filesize = ftell(movie->file);
     fseek(movie->file, 0, SEEK_SET);
-    uint32_t frame_c = movie->header->uiFrameCount;
+    uint32_t frame_c = SERGetFrameCount(movie);
     size_t trailer_offset = SERGetTrailerOffset(movie->header),
            expected_trailer_size = (frame_c * sizeof(uint64_t)),
          trailer_size = 0;
