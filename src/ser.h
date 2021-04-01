@@ -145,6 +145,7 @@ long        SERGetTrailerOffset(SERHeader *header);
 SERFrame   *SERGetFrame(SERMovie *movie, uint32_t frame_idx);
 int         SERGetFramePixel(SERFrame *frame, uint32_t x, uint32_t y,
                              SERPixelValue *value);
+void       *SERGetFramePixels(SERMovie *movie, uint32_t frame_idx, size_t *sz);
 void        SERReleaseFrame(SERFrame *frame);
 SERHeader  *SERDuplicateHeader(SERHeader *srcheader);
 int         SERCountMovieWarnings(int warnings);

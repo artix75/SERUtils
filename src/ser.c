@@ -127,6 +127,13 @@ static int parseHeader(SERMovie *movie) {
     return 1;
 }
 
+static uint16_t getTruncatedUInt16(uint16_t value, uint32_t pixel_size) {
+    if (pixel_size >= 16) return value;
+    uint32_t lshift = 16 - pixel_size,
+             rshift = pixel_size - lshift;
+    return (value << lshift) + (value >> rshift);
+}
+
 /* Library functions */
 
 char *SERGetColorString(uint32_t colorID) {
@@ -333,6 +340,94 @@ int SERGetFramePixel(SERFrame *frame, uint32_t x, uint32_t y,
         }
     }
     return 1;
+}
+
+void *SERGetFramePixels(SERMovie *movie, uint32_t frame_idx, size_t *size) {
+    void *pixels = NULL;
+    assert(size != NULL);
+    *size = 0;
+    SERFrame *frame = SERGetFrame(movie, frame_idx);
+    if (frame == NULL) goto fail;
+    *size = SERGetFrameSize(movie->header);
+    if (*size == 0) goto fail;
+    pixels = malloc(*size);
+    if (pixels == NULL) goto fail;
+    memset(pixels, 0, *size);
+    int channels = SERGetNumberOfPlanes(movie->header),
+        depth = (int) frame->pixelDepth,
+        chsize = (depth > 8 ? 2 : 1),
+        same_endianess = (IS_BIG_ENDIAN == (frame->littleEndian == 1)),
+        is_mono = (channels == 1);
+    if (chsize == 1) {
+        /* 8-bit image */
+        if (is_mono) memcpy(pixels, frame->data, *size);
+        else {
+            uint8_t c1, c2, c3, r, g, b;
+            uint8_t *read_ptr = frame->data, *write_ptr = pixels;
+            size_t written = 0;
+            while (written < *size) {
+                c1 = *(read_ptr++);
+                c2 = *(read_ptr++);
+                c3 = *(read_ptr++);
+                if (frame->colorID == COLOR_RGB) {
+                    r = c1, g = c2, b = c3;
+                } else {
+                    b = c1, g = c2, r = c3;
+                }
+                *(write_ptr++) = r;
+                *(write_ptr++) = g;
+                *(write_ptr++) = b;
+                written += 3;
+            }
+        }
+    } else {
+        /* 8-16 bit image */
+        uint16_t *read_ptr = frame->data, *write_ptr = pixels;
+        size_t written = 0;
+        if (is_mono) {
+            uint16_t pixel;
+            while (written < *size) {
+                pixel = *(read_ptr++);
+                if (!same_endianess) swapint16(&pixel);
+                if (depth < 16) pixel = getTruncatedUInt16(pixel, depth);
+                *(write_ptr++) = pixel;
+                written += 2;
+            }
+        } else {
+            uint16_t c1, c2, c3, r, g, b;
+            while (written < *size) {
+                c1 = *(read_ptr++);
+                c2 = *(read_ptr++);
+                c3 = *(read_ptr++);
+                if (!same_endianess) {
+                    swapint16(&c1);
+                    swapint16(&c2);
+                    swapint16(&c3);
+                }
+                if (depth < 16) {
+                    c1 = getTruncatedUInt16(c1, depth);
+                    c2 = getTruncatedUInt16(c2, depth);
+                    c3 = getTruncatedUInt16(c3, depth);
+                }
+                if (frame->colorID == COLOR_RGB) {
+                    r = c1, g = c2, b = c3;
+                } else {
+                    b = c1, g = c2, r = c3;
+                }
+                *(write_ptr++) = r;
+                *(write_ptr++) = g;
+                *(write_ptr++) = b;
+                written += (3 * 2);
+            }
+        }
+    }
+    SERReleaseFrame(frame);
+    return pixels;
+fail:
+    *size = 0;
+    if (frame != NULL) SERReleaseFrame(frame);
+    if (pixels != NULL) free(pixels);
+    return NULL;
 }
 
 uint64_t SERGetFrameDate(SERMovie *movie, long idx) {
