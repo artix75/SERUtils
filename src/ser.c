@@ -26,6 +26,7 @@
 #include "ser.h"
 
 #define NANOSEC_PER_SEC     1000000000
+#define MICROSEC_PER_SEC    1000000
 #define TIMEUNITS_PER_SEC   (NANOSEC_PER_SEC / 100)
 #define SECS_UNTIL_UNIXTIME 62135596800
 
@@ -153,9 +154,12 @@ char *SERGetColorString(uint32_t colorID) {
     return "UNKNOWN";
 }
 
-time_t SERVideoTimeToUnixtime(uint64_t video_t) {
-    uint64_t seconds = video_t / TIMEUNITS_PER_SEC;
-    return seconds - SECS_UNTIL_UNIXTIME;
+time_t SERVideoTimeToUnixtime(uint64_t video_t, uint32_t *usec) {
+    double elapsed_sec = video_t / (double) TIMEUNITS_PER_SEC;
+    uint64_t seconds = (uint64_t) elapsed_sec - SECS_UNTIL_UNIXTIME;
+    if (usec != NULL)
+        *usec = (uint64_t)(elapsed_sec * MICROSEC_PER_SEC)  % MICROSEC_PER_SEC;
+    return seconds;
 }
 
 int SERGetNumberOfPlanes(SERHeader *header) {
@@ -223,7 +227,7 @@ SERFrame *SERGetFrame(SERMovie *movie, uint32_t frame_idx) {
     frame->index = frame_idx;
     frame->datetime = SERGetFrameDate(movie, frame_idx);
     if (frame->datetime > 0)
-        frame->unixtime = SERVideoTimeToUnixtime(frame->datetime);
+        frame->unixtime = SERVideoTimeToUnixtime(frame->datetime, NULL);
     else frame->unixtime = 0;
     frame->littleEndian = movie->header->uiLittleEndian;
     frame->pixelDepth = movie->header->uiPixelDepth;
@@ -258,8 +262,8 @@ fail:
     return NULL;
 }
 
-int SERGetFramePixel(SERFrame *frame, uint32_t x, uint32_t y,
-                  SERPixelValue *value)
+int SERGetFramePixel(SERMovie *movie, SERFrame *frame, uint32_t x, uint32_t y,
+    SERPixelValue *value)
 {
     assert(value != NULL);
     if (frame->data == NULL) {
@@ -281,7 +285,7 @@ int SERGetFramePixel(SERFrame *frame, uint32_t x, uint32_t y,
      * For more info:
      * https://free-astro.org/index.php/SER#Specification_issue_with_endianness
      */
-    int same_endianess = (IS_BIG_ENDIAN == (frame->littleEndian == 1));
+    int same_endianess = (IS_BIG_ENDIAN == SERIsBigEndian(movie));
     int is_rgb = (frame->colorID >= COLOR_RGB);
     if (channel_size == 1) {
         /* 1-8 bit frames */
@@ -356,7 +360,7 @@ void *SERGetFramePixels(SERMovie *movie, uint32_t frame_idx, size_t *size) {
     int channels = SERGetNumberOfPlanes(movie->header),
         depth = (int) frame->pixelDepth,
         chsize = (depth > 8 ? 2 : 1),
-        same_endianess = (IS_BIG_ENDIAN == (frame->littleEndian == 1)),
+        same_endianess = (IS_BIG_ENDIAN == SERIsBigEndian(movie)),
         is_mono = (channels == 1);
     if (chsize == 1) {
         /* 8-bit image */
@@ -511,6 +515,7 @@ SERMovie *SEROpenMovie(char *filepath) {
         return NULL;
     }
     movie->warnings = 0;
+    movie->invert_endianness = 0;
     movie->duration = 0;
     fseek(movie->file, 0, SEEK_END);
     movie->filesize = ftell(movie->file);

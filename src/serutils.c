@@ -27,11 +27,13 @@
 #include <sys/errno.h>
 #include "log.h"
 #include "ser.h"
+#include "fits.h"
 
-#define ACTION_NONE     0
-#define ACTION_EXTRACT  1
-#define ACTION_CUT      2
-#define ACTION_SPLIT    3
+#define ACTION_NONE         0
+#define ACTION_EXTRACT      1
+#define ACTION_CUT          2
+#define ACTION_SPLIT        3
+#define ACTION_SAVE_FRAME   4
 
 #define SPLIT_MODE_COUNT    1
 #define SPLIT_MODE_FRAMES   2
@@ -48,6 +50,9 @@
 #define BREAK_DATES         2
 #define BREAK_DATE_ORDER    3
 #define BREAK_NO_DATES      4
+
+#define IMAGE_FORMAT_RAW    1
+#define IMAGE_FORMAT_FITS   2
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -93,6 +98,9 @@ typedef struct {
     int do_check;
     int overwrite;
     int break_movie; /* Used for tests */
+    int save_frame_id;
+    int image_format;
+    int invert_endianness;
 } MainConfig;
 
 /* Globals */
@@ -107,6 +115,11 @@ char *warn_messages[] = {
     WARN_MISSING_TRAILER_MSG,
     WARN_INCOMPLETE_TRAILER_MSG,
     WARN_BAD_FRAME_DATES_MSG,
+};
+char *image_formats[] = {
+    NULL,
+    "raw",
+    "fits"
 };
 
 
@@ -236,8 +249,8 @@ static time_t getFrameRangeDuration(SERMovie *movie, SERFrameRange *range) {
     if (start_date == 0 || end_date == 0) return -1;
     if (end_date < start_date) return -1;
     if (start_date == end_date) return 0;
-    time_t start_t = SERVideoTimeToUnixtime(start_date),
-           end_t = SERVideoTimeToUnixtime(end_date);
+    time_t start_t = SERVideoTimeToUnixtime(start_date, NULL),
+           end_t = SERVideoTimeToUnixtime(end_date, NULL);
     return end_t - start_t;
 }
 
@@ -402,8 +415,8 @@ static size_t generateWinJUPOSMovieFilename(char *dst, size_t max_size,
     SERMovie *movie, char* ext)
 {
     if (movie->warnings & WARN_BAD_FRAME_DATES) goto bad_dates;
-    time_t start_t = SERVideoTimeToUnixtime(movie->firstFrameDate);
-    time_t end_t = SERVideoTimeToUnixtime(movie->lastFrameDate);
+    time_t start_t = SERVideoTimeToUnixtime(movie->firstFrameDate, NULL);
+    time_t end_t = SERVideoTimeToUnixtime(movie->lastFrameDate, NULL);
     if (start_t <= 0 || end_t <= 0 || (end_t < start_t)) goto bad_dates;
     time_t mid_t = start_t + ((end_t - start_t) / 2);
     if (mid_t == 0) goto bad_dates;
@@ -596,7 +609,7 @@ static int determineSplitRanges(SERMovie *movie) {
         for (i = 0; i < SERGetFrameCount(movie); i++) {
             uint64_t datetime = SERGetFrameDate(movie, i);
             if (datetime == 0) goto invalid_datetime;
-            time_t frame_t = SERVideoTimeToUnixtime(datetime);
+            time_t frame_t = SERVideoTimeToUnixtime(datetime, NULL);
             if (frame_t <= 0 || frame_t < previous_t) goto invalid_datetime;
             if (i == 0) range->from = i;
             else if (i == range->from) {
@@ -677,8 +690,8 @@ invalid_datetime:
             if (duration < 0) {
                 uint64_t start_date = SERGetFrameDate(movie, range->from),
                          end_date = SERGetFrameDate(movie, range->to);
-                time_t start_t = SERVideoTimeToUnixtime(start_date),
-                       end_t = SERVideoTimeToUnixtime(end_date);
+                time_t start_t = SERVideoTimeToUnixtime(start_date, NULL),
+                       end_t = SERVideoTimeToUnixtime(end_date, NULL);
                 SERLogErr(
                     LOG_TAG_FATAL
                     "End frame %d time %zu < start frame %d time %zu\n",
@@ -726,6 +739,9 @@ static void initConfig() {
     conf.do_check = 0;
     conf.overwrite = 0;
     conf.break_movie = 0;
+    conf.image_format = 0;
+    conf.save_frame_id = 0;
+    conf.invert_endianness = 0;
     SERLogUseColors = 1;
     SERLogLevel = LOG_LEVEL_INFO;
 }
@@ -737,9 +753,16 @@ static void printHelp(char **argv) {
     fprintf(stderr, "   --extract FRAME_RANGE    Extract frames\n");
     fprintf(stderr, "   --cut FRAME_RANGE        Cut frames\n");
     fprintf(stderr, "   --split SPLIT            Split movie\n");
+    fprintf(stderr, "   --save-frame FRAME_ID    Save frame\n");
     fprintf(stderr, "   --json                   Log movie info to JSON\n");
     fprintf(stderr, "   --check                  Perform movie check before "
                                                  "any other action\n");
+    fprintf(stderr, "   --image-format [FORMAT]  Image format for --save-frame"
+                                                 " action.\n"
+                    "                            Leave it empty to get a list "
+                    "of supported formats.\n");
+    fprintf(stderr, "   --invert-endianness      Invert movie endianness "
+                                                 "specified in movie header\n");
     fprintf(stderr, "   -o, --output FILE        Output movie path.\n");
     fprintf(stderr, "   --winjupos-format        Use WinJUPOS spec. for "
                                                  "output filename\n");
@@ -881,6 +904,32 @@ static int parseOptions(int argc, char **argv) {
             conf.split_amount = split_amount;
             conf.split_mode = split_mode;
             conf.action = ACTION_SPLIT;
+        } else if (strcmp("--save-frame", arg) == 0) {
+            if (is_last_arg) {
+                fprintf(stderr, "Missing frame id for `--save-frame`\n");
+                exit(1);
+            }
+            conf.save_frame_id = atoi(argv[++i]);
+            conf.action = ACTION_SAVE_FRAME;
+            if (conf.image_format == 0)
+                conf.image_format = IMAGE_FORMAT_FITS;
+        } else if (strcmp("--image-format", arg) == 0) {
+            if (is_last_arg) goto print_image_formats;
+            char *format = argv[++i];
+            conf.image_format = 0;
+            int j, numformats = (int)(sizeof(image_formats) / sizeof(char *));
+            for (j = 0; j < numformats; j++) {
+                char *fmt = image_formats[j];
+                if (fmt == NULL) continue;
+                if (strcasecmp(format, fmt) == 0) {
+                    conf.image_format = j;
+                    break;
+                }
+            }
+            if (conf.image_format == 0) {
+                fprintf(stderr, "Invalid image format\n");
+                goto print_image_formats;
+            }
         } else if (strcmp("--json", arg) == 0) {
             conf.log_to_json = 1;
         } else if (strcmp("--winjupos-format", arg) == 0) {
@@ -889,6 +938,8 @@ static int parseOptions(int argc, char **argv) {
             conf.do_check = 1;
         } else if (strcmp("--overwrite", arg) == 0) {
             conf.overwrite = 1;
+        } else if (strcmp("--invert-endianness", arg) == 0) {
+            conf.invert_endianness = 1;
         } else if (strcmp("--no-colors", arg) == 0) {
             SERLogUseColors = 0;
         } else if (strcmp("-o", arg) == 0 || strcmp("--output", arg) == 0) {
@@ -921,7 +972,8 @@ static int parseOptions(int argc, char **argv) {
         if (conf.break_movie == BREAK_FRAMES) conf.frames_to = -2;
         else conf.frames_to = -1;
         conf.use_winjupos_filename = 0;
-    }
+    } else if (conf.action == ACTION_SAVE_FRAME)
+        conf.use_winjupos_filename = 0;
     return i;
 invalid_range_arg:
     fprintf(stderr, "Invalid frame range\n");
@@ -929,6 +981,15 @@ invalid_range_arg:
     return -1;
 invalid_split_arg:
     fprintf(stderr, "Invalid --split value\n");
+    exit(1);
+    return -1;
+print_image_formats:
+    fprintf(stderr, "Supported image formats:\n");
+    for (i = 0; i < (int)(sizeof(image_formats) / sizeof(char *)); i++) {
+        char *format = image_formats[i];
+        if (format == NULL) continue;
+        fprintf(stderr, "    %s\n", format);
+    }
     exit(1);
     return -1;
 }
@@ -952,7 +1013,7 @@ static void printPixelValue(SERMovie *movie, uint32_t frame_idx, uint32_t x,
         return;
     }
     SERPixelValue px;
-    if (SERGetFramePixel(frame, x, y, &px)) {
+    if (SERGetFramePixel(movie, frame, x, y, &px)) {
         if (frame->colorID < COLOR_RGB) {
             if (frame->pixelDepth > 8) printf("%d\n", px.int16);
             else printf("%d\n", px.int8);
@@ -1467,8 +1528,8 @@ static void printMetadata(SERHeader *header) {
     strncpy(observer, (const char*) header->sObserver, 40);
     strncpy(camera, (const char*) header->sInstrument, 40);
     strncpy(scope, (const char*) header->sTelescope, 40);
-    time_t unix_t = SERVideoTimeToUnixtime(header->ulDateTime);
-    time_t unix_t_utc = SERVideoTimeToUnixtime(header->ulDateTime_UTC);
+    time_t unix_t = SERVideoTimeToUnixtime(header->ulDateTime, NULL);
+    time_t unix_t_utc = SERVideoTimeToUnixtime(header->ulDateTime_UTC, NULL);
     fileID[14] = '\0';
     observer[39] = '\0';
     scope[39] = '\0';
@@ -1501,12 +1562,12 @@ static void printMovieInfo(SERMovie *movie) {
     printFieldValuePair("First Frame Date", "%llu", movie->firstFrameDate);
     printFieldValuePair("Last Frame Date", "%llu", movie->lastFrameDate);
     if (movie->firstFrameDate > 0) {
-        time_t unix_t = SERVideoTimeToUnixtime(movie->firstFrameDate);
+        time_t unix_t = SERVideoTimeToUnixtime(movie->firstFrameDate, NULL);
         printFieldValuePair("First Frame Timestamp", "%s",
             stripped_ctime(&unix_t));
     }
     if (movie->firstFrameDate > 0) {
-        time_t unix_t = SERVideoTimeToUnixtime(movie->lastFrameDate);
+        time_t unix_t = SERVideoTimeToUnixtime(movie->lastFrameDate, NULL);
         printFieldValuePair("Last Frame Timestamp", "%s",
             stripped_ctime(&unix_t));
     }
@@ -1571,13 +1632,13 @@ static int logToJSON(FILE *json_file, SERMovie *movie)
         movie->lastFrameDate);
 
     fprintf(json_file, "    \"unixtime\": %zu,\n",
-        SERVideoTimeToUnixtime(header->ulDateTime));
+        SERVideoTimeToUnixtime(header->ulDateTime, NULL));
     fprintf(json_file, "    \"unixtimeUTC\": %zu,\n",
-        SERVideoTimeToUnixtime(header->ulDateTime_UTC));
+        SERVideoTimeToUnixtime(header->ulDateTime_UTC, NULL));
     fprintf(json_file, "    \"firstFrameUnixtime\": %zu,\n",
-        SERVideoTimeToUnixtime(movie->firstFrameDate));
+        SERVideoTimeToUnixtime(movie->firstFrameDate, NULL));
     fprintf(json_file, "    \"lastFrameUnixtime\": %zu,\n",
-        SERVideoTimeToUnixtime(movie->lastFrameDate));
+        SERVideoTimeToUnixtime(movie->lastFrameDate, NULL));
     fprintf(json_file, "    \"duration\": %d,\n", movie->duration);
 
     fprintf(json_file, "    \"warnings\": [");
@@ -1602,6 +1663,206 @@ static int logToJSON(FILE *json_file, SERMovie *movie)
     return 1;
 }
 
+static int saveFITSImage(SERMovie *movie, FILE *imagefile, uint32_t frame_idx,
+    void *pixels, size_t size)
+{
+    FITSHeaderUnit *hdr = NULL;
+    void *data_unit =  NULL;
+    size_t data_size = 0;
+    hdr = FITSCreateHeaderUnit();
+    int keyword_added =
+        FITSHeaderAdd(hdr, "SIMPLE", "file does conform to FITS standard", "T");
+    if (!keyword_added) goto keyword_fail;
+    uint32_t color_id = movie->header->uiColorID;
+    int bitpix = (movie->header->uiPixelDepth <= 8 ? 8 : 16),
+        is_mono = (color_id < COLOR_RGB),
+        naxis = (is_mono ? 2 : 3);
+    keyword_added = FITSHeaderAdd(hdr, "BITPIX",
+        "number of bits per data pixel", "%d", bitpix);
+    if (!keyword_added) goto keyword_fail;
+    keyword_added = FITSHeaderAdd(hdr, "NAXIS",
+        "number of data axes", "%d", naxis);
+    if (!keyword_added) goto keyword_fail;
+    keyword_added = FITSHeaderAdd(hdr, "NAXIS1",
+        "image width", "%d", movie->header->uiImageWidth);
+    if (!keyword_added) goto keyword_fail;
+    keyword_added = FITSHeaderAdd(hdr, "NAXIS2",
+        "image height", "%d", movie->header->uiImageHeight);
+    if (!keyword_added) goto keyword_fail;
+    if (!is_mono) {
+        keyword_added = FITSHeaderAdd(hdr, "NAXIS3",
+            "channels", "%d", 3);
+        if (!keyword_added) goto keyword_fail;
+    }
+    if (is_mono && color_id > COLOR_MONO) {
+        /* Bayer pattern */
+        char bayer_pat[BUFLEN];
+        bayer_pat[0] = '\0';
+        sprintf(bayer_pat, "'%s    '", SERGetColorString(color_id));
+        keyword_added = FITSHeaderAdd(hdr, "BAYERPAT",
+            "Bayer color pattern", "%s", bayer_pat);
+        if (!keyword_added) goto keyword_fail;
+    }
+    if (SERMovieHasTrailer(movie)) {
+        uint32_t usec = 0;
+        time_t frame_time = 0;
+        char timestamp[24];
+        size_t datelen = 0;
+        uint64_t frame_datetime = SERGetFrameDate(movie, frame_idx);
+        if (frame_datetime > 0)
+            frame_time = SERVideoTimeToUnixtime(frame_datetime, &usec);
+        if (frame_time > 0) {
+            struct tm *frame_tm = gmtime(&frame_time);
+            datelen = strftime(timestamp, 24, "%Y-%m-%dT%H:%M:%S", frame_tm);
+        }
+        if (datelen == 19) {
+            char *ptr = timestamp + datelen;
+            usec /= 1000;
+            if (usec < 1000) datelen += snprintf(ptr, 5, ".%03d", usec);
+            else SERLogWarn(LOG_TAG_WARN "Invalid microsec. for frame date\n");
+        }
+        if (datelen == 23) {
+            timestamp[23] = '\0';
+            keyword_added = FITSHeaderAdd(hdr, "DATE-OBS",
+                "UTC date of observation", "'%s'", timestamp);
+            if (!keyword_added) goto keyword_fail;
+        }
+    }
+    /* End header */
+    if (!FITSHeaderEnd(hdr)) goto keyword_fail;
+    data_unit = FITSCreateDataUnit(pixels, size, &data_size);
+    if (data_unit == NULL) {
+        SERLogErr(LOG_TAG_ERR "Failed to create FITS data unit\n");
+        goto fail;
+    }
+    size_t nwritten = 0, totwritten = 0, remain = hdr->size;
+    char *ptr = (char *) hdr->header;
+    assert(hdr->header != NULL);
+    SERLogInfo("FITS Header: added %d keyword(s)\n", hdr->count);
+    printf("Writing %zu bytes of FITS header\n", hdr->size);
+    while (totwritten < hdr->size) {
+        nwritten = fwrite(ptr, 1, remain, imagefile);
+        if (nwritten <= 0) break;
+        totwritten += nwritten;
+        ptr += nwritten;
+        remain -= nwritten;
+    }
+    if (totwritten != hdr->size) {
+        SERLogErr(LOG_TAG_ERR "Failed to write header unit to FITS file\n");
+        goto fail;
+    }
+    nwritten = 0, totwritten = 0, remain = data_size;
+    ptr = (char *) data_unit;
+    printf("Writing %zu bytes of FITS data\n", data_size);
+    while (totwritten < data_size) {
+        nwritten = fwrite(ptr, 1, remain, imagefile);
+        if (nwritten <= 0) break;
+        totwritten += nwritten;
+        ptr += nwritten;
+        remain -= nwritten;
+    }
+    if (totwritten != data_size) {
+        SERLogErr(LOG_TAG_ERR "Failed to write data unit to FITS file\n");
+        goto fail;
+    }
+    FITSReleaseHeaderUnit(hdr);
+    free(data_unit);
+    return 1;
+keyword_fail:
+    SERLogErr(LOG_TAG_ERR "Failed to add FITS keyword\n");
+fail:
+    if (hdr != NULL) FITSReleaseHeaderUnit(hdr);
+    if (data_unit != NULL) free(data_unit);
+    return 0;
+}
+
+static int saveFrame(SERMovie *movie, int frame_id) {
+    uint32_t frame_idx = 0;
+    char *err = NULL;
+    char errmsg[BUFLEN];
+    void *pixels = NULL;
+    FILE *imagefile = NULL;
+    if (frame_id == 0) {
+        err = "invalid frame id: 0";
+        goto fail;
+    }
+    if (frame_id < 0) frame_idx = SERGetFrameCount(movie) + frame_id;
+    else frame_idx = frame_id - 1;
+    if (frame_idx >= SERGetFrameCount(movie)) {
+        sprintf(errmsg, "frame id %d beyond movie frames %d", frame_idx + 1,
+            SERGetFrameCount(movie));
+        err = errmsg;
+        goto fail;
+    }
+    size_t size = 0;
+    pixels = SERGetFramePixels(movie, frame_idx, &size);
+    if (pixels == NULL || size == 0) {
+        sprintf(errmsg, "could not get frame %d pixels", frame_id);
+        err = errmsg;
+        goto fail;
+    }
+    SERLogInfo("Read %zu pixel byte(s)\n", size);
+    char *dir = conf.output_dir;
+    char outpath[PATH_MAX];
+    char suffix[BUFLEN];
+    char *ext = NULL;
+    int format = conf.image_format;
+    outpath[0] = '\0';
+    suffix[0] = '\0';
+    snprintf(suffix, BUFLEN, "-frame-%d", frame_idx + 1);
+    if (format == 0) format = IMAGE_FORMAT_RAW;
+    if (dir == NULL) dir = "/tmp";
+    if (format == IMAGE_FORMAT_FITS) ext = ".fit";
+    else if (format == IMAGE_FORMAT_RAW) ext = ".raw";
+    else {
+        SERLogErr(LOG_TAG_ERR, "Invalid image format\n");
+        goto fail;
+    }
+    if (!makeFilepath(outpath, movie->filepath, dir, suffix, ext)) {
+        SERLogErr("Failed to create temporary filepath\n");
+        goto fail;
+    }
+    if (fileExists(outpath) && !conf.overwrite) {
+        int overwrite = askForFileOverwrite(outpath);
+        if (!overwrite) goto fail;
+    }
+    imagefile = fopen(outpath, "w");
+    if (imagefile == NULL) {
+        SERLogErr(LOG_TAG_ERR "Could not open '%s' for writing\n", outpath);
+        goto fail;
+    }
+    if (format == IMAGE_FORMAT_FITS) {
+        if (!saveFITSImage(movie, imagefile, frame_idx, pixels, size)) {
+            SERLogErr("Could not create FITS file\n");
+            goto fail;
+        }
+    } else if (format == IMAGE_FORMAT_RAW) {
+        SERLogInfo("Writing %zu bytes to raw image\n", size);
+        size_t nwritten = 0, totwritten = 0, remain = size;
+        char *ptr = pixels;
+        while (totwritten < size) {
+            nwritten = fwrite(pixels, 1, remain, imagefile);
+            if (nwritten <= 0) break;
+            totwritten += nwritten;
+            ptr += totwritten;
+            remain -= totwritten;
+        }
+        if (totwritten != size) {
+            SERLogErr(LOG_TAG_ERR "Failed to write image\n");
+            goto fail;
+        }
+    }
+    free(pixels);
+    fclose(imagefile);
+    SERLogSuccess("Frame image saved to:\n'%s'\n", outpath);
+    return 1;
+fail:
+    if (err != NULL) SERLogErr(LOG_TAG_ERR "%s\n", err);
+    if (pixels != NULL) free(pixels);
+    if (imagefile != NULL) fclose(imagefile);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     initConfig();
     int filepath_idx = parseOptions(argc, argv);
@@ -1619,6 +1880,7 @@ int main(int argc, char **argv) {
         SERLogErr(LOG_TAG_ERR "Could not open movie at: '%s'\n", filepath);
         goto err;
     }
+    movie->invert_endianness = conf.invert_endianness;
     printMovieInfo(movie);
     if (movie->warnings > 0 && !conf.do_check)
         printMovieWarnings(movie->warnings);
@@ -1654,6 +1916,11 @@ int main(int argc, char **argv) {
             goto err;
         }
         if (!splitMovie(movie)) goto err;
+    } else if (conf.action == ACTION_SAVE_FRAME) {
+        if (!saveFrame(movie, conf.save_frame_id)) {
+            SERLogErr("Failed to save frame\n");
+            goto err;
+        }
     }
     if (conf.log_to_json) {
         char json_filename[PATH_MAX + 1];

@@ -68,15 +68,22 @@
 #define SERGetLastFrameIndex(movie) \
     (SERGetFrameCount(movie) - 1)
 
-#pragma pack(1)
+/* See WARN above SERHeader->uiLittleEndian definition. */
+#define SERIsBigEndian(movie) \
+    ((movie->invert_endianness && movie->header->uiLittleEndian == 0) || \
+     (!movie->invert_endianness && movie->header->uiLittleEndian == 1))
 
-typedef struct {
+typedef struct  __attribute__ ((__packed__)) {
     char sFileID[14];
     uint32_t uiLuID;
     uint32_t uiColorID;
     /* WARN: For some reason, uiLittleEndian is used in the opposite meanning,
      * so that the image data byte order is big-endian when uiLittleEndian is
      * 1, and little-endian when uiLittleEndian is 0.
+     * By default, SERUtils follows this behaviour in order to avoid breaking
+     * compatibility with these old softwares.
+     * Anyway you can revert this behaviour (so that uiLittleEndian = 1 really
+     * means little-endian), by setting invert_endianness to 1.
      * For more info, see:
      * https://free-astro.org/index.php/SER#Specification_issue_with_endianness
      */
@@ -101,6 +108,7 @@ typedef struct {
     uint64_t firstFrameDate;
     uint64_t lastFrameDate;
     int warnings;
+    int invert_endianness;
 } SERMovie;
 
 typedef union {
@@ -143,13 +151,13 @@ size_t      SERGetFrameSize(SERHeader *header);
 long        SERGetFrameOffset(SERHeader *header, int frame_idx);
 long        SERGetTrailerOffset(SERHeader *header);
 SERFrame   *SERGetFrame(SERMovie *movie, uint32_t frame_idx);
-int         SERGetFramePixel(SERFrame *frame, uint32_t x, uint32_t y,
-                             SERPixelValue *value);
+int         SERGetFramePixel(SERMovie * movie, SERFrame *frame,
+                             uint32_t x, uint32_t y, SERPixelValue *value);
 void       *SERGetFramePixels(SERMovie *movie, uint32_t frame_idx, size_t *sz);
 void        SERReleaseFrame(SERFrame *frame);
 SERHeader  *SERDuplicateHeader(SERHeader *srcheader);
 int         SERCountMovieWarnings(int warnings);
 char       *SERGetColorString(uint32_t colorID);
-time_t      SERVideoTimeToUnixtime(uint64_t video_t);
+time_t      SERVideoTimeToUnixtime(uint64_t video_t, uint32_t *usec);
 
 #endif /* __SER_H__ */

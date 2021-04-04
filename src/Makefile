@@ -27,7 +27,7 @@ endif
 default: all
 BIN_CFLAGS = $(CFLAGS)
 BIN_LDFLAGS = $(LDFLAGS)
-CLI_OBJS=$(OBJS) serutils.o
+CLI_OBJS=$(OBJS) fits.o serutils.o
 
 $(LIBNAME): $(OBJS)
 	$(CC) $(LIBOPTS) -o ../lib/$@ $(OBJS) $(LDFLAGS)
