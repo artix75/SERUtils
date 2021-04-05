@@ -1580,6 +1580,8 @@ static void printMovieInfo(SERMovie *movie) {
             getElapsedTimeStr(elapsed_time, BUFLEN, movie->duration);
         if (elapsed_str_len > 0) fmt =  "%d sec. (%s)";
         printFieldValuePair("Duration", fmt, movie->duration, elapsed_time);
+        float fps = (float) SERGetFrameCount(movie) / (float) movie->duration;
+        printFieldValuePair("FPS", "%.2f", fps);
     }
 print_filesize:
     fmt = "%ld%s";
