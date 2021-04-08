@@ -1013,7 +1013,7 @@ static void printPixelValue(SERMovie *movie, uint32_t frame_idx, uint32_t x,
         return;
     }
     SERPixelValue px;
-    if (SERGetFramePixel(movie, frame, x, y, &px)) {
+    if (SERGetFramePixel(movie, frame, x, y, IS_BIG_ENDIAN, &px)) {
         if (frame->colorID < COLOR_RGB) {
             if (frame->pixelDepth > 8) printf("%d\n", px.int16);
             else printf("%d\n", px.int8);
@@ -1784,6 +1784,8 @@ static int saveFrame(SERMovie *movie, int frame_id) {
     char errmsg[BUFLEN];
     void *pixels = NULL;
     FILE *imagefile = NULL;
+    int format = conf.image_format;
+    if (format == 0) format = IMAGE_FORMAT_RAW;
     if (frame_id == 0) {
         err = "invalid frame id: 0";
         goto fail;
@@ -1797,7 +1799,9 @@ static int saveFrame(SERMovie *movie, int frame_id) {
         goto fail;
     }
     size_t size = 0;
-    pixels = SERGetFramePixels(movie, frame_idx, &size);
+    int big_endian = IS_BIG_ENDIAN;
+    if (format == IMAGE_FORMAT_FITS) big_endian = 1;
+    pixels = SERGetFramePixels(movie, frame_idx, big_endian, &size);
     if (pixels == NULL || size == 0) {
         sprintf(errmsg, "could not get frame %d pixels", frame_id);
         err = errmsg;
@@ -1808,11 +1812,9 @@ static int saveFrame(SERMovie *movie, int frame_id) {
     char outpath[PATH_MAX];
     char suffix[BUFLEN];
     char *ext = NULL;
-    int format = conf.image_format;
     outpath[0] = '\0';
     suffix[0] = '\0';
     snprintf(suffix, BUFLEN, "-frame-%d", frame_idx + 1);
-    if (format == 0) format = IMAGE_FORMAT_RAW;
     if (dir == NULL) dir = "/tmp";
     if (format == IMAGE_FORMAT_FITS) ext = ".fit";
     else if (format == IMAGE_FORMAT_RAW) ext = ".raw";

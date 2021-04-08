@@ -263,7 +263,7 @@ fail:
 }
 
 int SERGetFramePixel(SERMovie *movie, SERFrame *frame, uint32_t x, uint32_t y,
-    SERPixelValue *value)
+    int big_endian, SERPixelValue *value)
 {
     assert(value != NULL);
     if (frame->data == NULL) {
@@ -285,7 +285,7 @@ int SERGetFramePixel(SERMovie *movie, SERFrame *frame, uint32_t x, uint32_t y,
      * For more info:
      * https://free-astro.org/index.php/SER#Specification_issue_with_endianness
      */
-    int same_endianess = (IS_BIG_ENDIAN == SERIsBigEndian(movie));
+    int same_endianess = (big_endian == SERIsBigEndian(movie));
     int is_rgb = (frame->colorID >= COLOR_RGB);
     if (channel_size == 1) {
         /* 1-8 bit frames */
@@ -346,7 +346,9 @@ int SERGetFramePixel(SERMovie *movie, SERFrame *frame, uint32_t x, uint32_t y,
     return 1;
 }
 
-void *SERGetFramePixels(SERMovie *movie, uint32_t frame_idx, size_t *size) {
+void *SERGetFramePixels(SERMovie *movie, uint32_t frame_idx, int big_endian,
+    size_t *size)
+{
     void *pixels = NULL;
     assert(size != NULL);
     *size = 0;
@@ -360,7 +362,7 @@ void *SERGetFramePixels(SERMovie *movie, uint32_t frame_idx, size_t *size) {
     int channels = SERGetNumberOfPlanes(movie->header),
         depth = (int) frame->pixelDepth,
         chsize = (depth > 8 ? 2 : 1),
-        same_endianess = (IS_BIG_ENDIAN == SERIsBigEndian(movie)),
+        same_endianess = (big_endian == SERIsBigEndian(movie)),
         is_mono = (channels == 1);
     if (chsize == 1) {
         /* 8-bit image */
