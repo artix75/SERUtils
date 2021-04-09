@@ -67,6 +67,8 @@
     (movie->header->uiFrameCount)
 #define SERGetLastFrameIndex(movie) \
     (SERGetFrameCount(movie) - 1)
+#define SERGetRealFrameCount(movie) \
+    ((movie->filesize - sizeof(SERHeader)) / SERGetFrameSize(movie->header))
 
 /* See WARN above SERHeader->uiLittleEndian definition. */
 #define SERIsBigEndian(movie) \
