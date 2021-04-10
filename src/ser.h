@@ -75,7 +75,14 @@
     ((movie->invert_endianness && movie->header->uiLittleEndian == 0) || \
      (!movie->invert_endianness && movie->header->uiLittleEndian == 1))
 
-typedef struct  __attribute__ ((__packed__)) {
+#if defined(__GNUC__)
+#define PACKED_STRUCT __attribute__ ((__packed__))
+#else
+#define PACKED_STRUCT
+#pragma pack(push, 1)
+#endif
+
+typedef struct PACKED_STRUCT {
     char sFileID[14];
     uint32_t uiLuID;
     uint32_t uiColorID;
@@ -100,6 +107,10 @@ typedef struct  __attribute__ ((__packed__)) {
     uint64_t ulDateTime;
     uint64_t ulDateTime_UTC;
 } SERHeader;
+
+#ifndef __GNUC__
+#pragma pack(pop)
+#endif
 
 typedef struct {
     char *filepath;
