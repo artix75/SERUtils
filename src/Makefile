@@ -48,6 +48,7 @@ install: all
 	cp ../lib/$(LIBNAME) $(LIBDIR)/$(LIBNAME)
 	cp ser.h $(INCLUDEDIR)/serutils/
 	cp log.h $(INCLUDEDIR)/serutils/
+	cp version.h $(INCLUDEDIR)/serutils/
 	cp serutils.h $(INCLUDEDIR)/serutils/
 	@if [ "$(PLATFORM)" = "Linux" ]; then /sbin/ldconfig; fi
 
