@@ -124,7 +124,7 @@ static int parseHeader(SERMovie *movie) {
         hdrptr += nread;
     }
     if (IS_BIG_ENDIAN) swapMovieHeader(movie->header);
-    printf("Read %lu header bytes\n\n", totread);
+    /*printf("Read %lu header bytes\n\n", totread);*/
     return 1;
 }
 
