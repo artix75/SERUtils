@@ -782,7 +782,7 @@ static void printHelp(char **argv) {
     fprintf(stderr, "   * The value for FRAME_RANGE can be:\n");
     fprintf(stderr, "       <from>..<to>\n");
     fprintf(stderr, "       <from>,<count>\n");
-    fprintf(stderr, "       <from>\n");
+    fprintf(stderr, "       <count>\n");
     fprintf(stderr, "     You can use negative value for <from> and <to>.\n"
         "     Example: -1 means the last frame\n\n"
     );
@@ -855,9 +855,9 @@ static int parseFrameRangeArgument (char *arg) {
             if (count <= 0) return 0;
         }
     } else {
-        from = atoi(arg);
-        if (from == 0) return 0;
-        to = -1;
+        count = atoi(arg);
+        if (count == 0) return 0;
+        from = 1;
     }
     if (from > 0) from--;
     if (to > 0) to--;
