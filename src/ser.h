@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#include "version.h"
 
 #define IS_BIG_ENDIAN (*(uint16_t *)"\0\xff" < 0x100)
 #if defined (__unix__) || (defined (__APPLE__) && defined (__MACH__))

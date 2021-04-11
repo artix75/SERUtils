@@ -751,7 +751,8 @@ static void initConfig() {
 
 
 static void printHelp(char **argv) {
-    fprintf(stderr, "Usage: %s [OPTIONS] SER_MOVIE\n\n", argv[0]);
+    fprintf(stderr, "serutils v%s\n\n", SERUTILS_VERSION);
+    fprintf(stderr, "Usage: %s [OPTIONS] SER_MOVIE_PATH\n\n", argv[0]);
     fprintf(stderr, "OPTIONS:\n\n");
     fprintf(stderr, "   --extract FRAME_RANGE    Extract frames\n");
     fprintf(stderr, "   --cut FRAME_RANGE        Cut frames\n");
@@ -774,6 +775,7 @@ static void printHelp(char **argv) {
     fprintf(stderr, "   --overwrite              Force overwriting existing "
                                                  "files.\n");
     fprintf(stderr, "   --no-colors              Disable colored output\n");
+    fprintf(stderr, "   --version                Print version\n");
     fprintf(stderr, "   -h, --help               Print this help\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "NOTES:\n\n");
@@ -965,6 +967,9 @@ static int parseOptions(int argc, char **argv) {
             conf.break_movie = BREAK_DATE_ORDER;
         } else if (strcmp("--break-no-dates", arg) == 0) {
             conf.break_movie = BREAK_NO_DATES;
+        } else if (strcmp("--version", arg) == 0) {
+            printf("%s\n", SERUTILS_VERSION);
+            exit(0);
         } else if (strcmp("-h", arg) == 0 || strcmp("--help", arg) == 0) {
             printHelp(argv);
             exit(1);
