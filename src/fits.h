@@ -22,6 +22,7 @@
 #define FITSHeaderEnd(header) (FITSHeaderAdd(header, "END", NULL, NULL))
 
 #include <stdlib.h>
+#include <stdint.h>
 
 typedef struct {
     size_t size;
