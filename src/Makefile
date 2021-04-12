@@ -8,6 +8,8 @@ OBJS=ser.o log.o
 PREFIX?=/usr/local
 LIBDIR=$(PREFIX)/lib
 BINDIR=$(PREFIX)/bin
+LOCALBIN=../bin
+LOCALLIB=../lib
 INCLUDEDIR=$(PREFIX)/include
 SHAREDIR=$(PREFIX)/share/psyc
 PLATFORM := $(shell sh -c 'uname -s 2>/dev/null || echo not')
@@ -29,13 +31,20 @@ BIN_CFLAGS = $(CFLAGS)
 BIN_LDFLAGS = $(LDFLAGS)
 CLI_OBJS=$(OBJS) fits.o serutils.o
 
-$(LIBNAME): $(OBJS)
+
+$(LOCALBIN):
+	@mkdir -p $@
+
+$(LOCALLIB):
+	@mkdir -p $@
+
+$(LIBNAME): $(OBJS) $(LOCALLIB)
 	$(CC) $(LIBOPTS) -o ../lib/$@ $(OBJS) $(LDFLAGS)
 
 serutils.o: 
 	$(CC) $(BIN_CFLAGS) -c -o $@ serutils.c
 
-serutils: $(CLI_OBJS)
+serutils: $(CLI_OBJS) $(LOCALBIN)
 	$(CC) -o ../bin/serutils $(CLI_OBJS) $(BIN_LDFLAGS)
 
 all: serutils $(LIBNAME)
