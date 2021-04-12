@@ -1,7 +1,7 @@
 # Copyright (C) 2019  Giuseppe Fabio Nicotra <artix2 at gmail dot com>
 
 SHELL=/bin/bash
-CFLAGS=-std=c99  -pedantic -Wall -W -Wno-missing-field-initializers -Wno-pragma-pack -Wno-unused-function -Wno-missing-braces
+CFLAGS=-std=gnu99 -pedantic -Wall -W -Wno-missing-field-initializers -Wno-unused-function -Wno-missing-braces
 LDFLAGS=
 LIBOPTS=
 OBJS=ser.o log.o

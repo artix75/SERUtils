@@ -1,4 +1,6 @@
 *.o
-bin/
-lib/
+bin/*
+!bin/README
+lib/*
+!lib/README
 tmp/
