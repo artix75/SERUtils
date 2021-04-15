@@ -73,7 +73,7 @@ You can split the movie into multiple movies by using the `--split` option, ie:
 
 Here's an example of a simple C program using the library:
 
-```
+``` C
 /* ser_movie_example.c */
 
 #include <stdio.h>
