@@ -154,6 +154,8 @@ char *SERGetColorString(uint32_t colorID) {
     return "UNKNOWN";
 }
 
+/* Convert SER datetime to Unixtime. If `usec` is not NULL, it can be used
+ * to retrieve microseconds. */
 time_t SERVideoTimeToUnixtime(uint64_t video_t, uint32_t *usec) {
     double elapsed_sec = video_t / (double) TIMEUNITS_PER_SEC;
     uint64_t seconds = (uint64_t) elapsed_sec - SECS_UNTIL_UNIXTIME;
@@ -162,6 +164,8 @@ time_t SERVideoTimeToUnixtime(uint64_t video_t, uint32_t *usec) {
     return seconds;
 }
 
+/* Get the number of planes (channels) specified in the movie header.
+ * "Mono" movies have one plane and RGB movies have three channels. */
 int SERGetNumberOfPlanes(SERHeader *header) {
     uint32_t color = header->uiColorID;
     if (color >= COLOR_RGB) return 3;
@@ -176,15 +180,20 @@ int SERGetBytesPerPixel(SERHeader *header) {
     else return (2 * planes);
 }
 
+/* Get the number of bytes for every single frame. */
 size_t SERGetFrameSize(SERHeader *header) {
     int bytes_per_px = SERGetBytesPerPixel(header);
     return header->uiImageWidth * header->uiImageHeight * bytes_per_px;
 }
 
+/* Get the offset, in bytes, of the frame `frame_idx` relative to the
+ * movie file (`frame_idx` starts from zero). */
 long SERGetFrameOffset(SERHeader *header, int frame_idx) {
     return sizeof(SERHeader) + (frame_idx * SERGetFrameSize(header));
 }
 
+/* Get the offset, in bytes, of tbhe movie's trailer containing frame
+ * timestamps. */
 long SERGetTrailerOffset(SERHeader *header) {
     uint32_t frame_idx = header->uiFrameCount;
     return SERGetFrameOffset(header, frame_idx);
@@ -196,6 +205,13 @@ void SERReleaseFrame(SERFrame *frame) {
     free(frame);
 }
 
+/* Get a single frame from the movie. The returned frame is a pointer to
+ * an allocated SERFrame strcuture containing both frame's metadata and
+ * frame's raw data. It's up to you to release the frame by using the
+ * `SERReleaseFrame` function.
+ * Frame index `frame_idx` parameter starts from zero.
+ * If frame is not found (ie. if `frame_idx` is beyond the number of
+ * movie's frames, return NULL. */
 SERFrame *SERGetFrame(SERMovie *movie, uint32_t frame_idx) {
     SERFrame *frame = NULL;
     assert(movie->header != NULL);
@@ -262,6 +278,12 @@ fail:
     return NULL;
 }
 
+/* Retrieve a single pixel from a single frame. Set `big_endian` to 1
+ * if you want pixel to be read in big-endian order.
+ * Pixel value is stored in the mandatory SERPixelValue structure pointed by
+ * the `value` argument.
+ * If frame is not valid or if x/y coordinates are beyond frame's size,
+ * return 0, otherwise return 1. */
 int SERGetFramePixel(SERMovie *movie, SERFrame *frame, uint32_t x, uint32_t y,
     int big_endian, SERPixelValue *value)
 {
@@ -346,6 +368,15 @@ int SERGetFramePixel(SERMovie *movie, SERFrame *frame, uint32_t x, uint32_t y,
     return 1;
 }
 
+/* Retrieve pixels from a single frame. Set `big_endian` to 1 if you need
+ * pixels to be represented in big endian byte order (depending on your system
+ * or destination storage).
+ * Use the mandatory `size` pointer to retrieve frame's number of bytes.
+ * The function allocates memory for pixel data. It's up to you to free
+ * the allocated memory.
+ * The frame index parameter (`frame_idx`) starts from zero.
+ * If frame is not found (ie. if `frame_idx` is beyond the number of
+ * movie's frames, return NULL. */
 void *SERGetFramePixels(SERMovie *movie, uint32_t frame_idx, int big_endian,
     size_t *size)
 {
@@ -394,6 +425,9 @@ void *SERGetFramePixels(SERMovie *movie, uint32_t frame_idx, int big_endian,
             uint16_t pixel;
             while (written < *size) {
                 pixel = *(read_ptr++);
+                /* Swap bytes if movie endianness (declared in movie's header)
+                 * differs from output endianness (depending on `big_endian`
+                 * argument. */
                 if (!same_endianess) swapint16(&pixel);
                 if (depth < 16) pixel = getTruncatedUInt16(pixel, depth);
                 *(write_ptr++) = pixel;
@@ -405,6 +439,9 @@ void *SERGetFramePixels(SERMovie *movie, uint32_t frame_idx, int big_endian,
                 c1 = *(read_ptr++);
                 c2 = *(read_ptr++);
                 c3 = *(read_ptr++);
+                /* Swap bytes if movie endianness (declared in movie's header)
+                 * differs from output endianness (depending on `big_endian`
+                 * argument. */
                 if (!same_endianess) {
                     swapint16(&c1);
                     swapint16(&c2);
@@ -436,6 +473,13 @@ fail:
     return NULL;
 }
 
+/* Read frame's timestamp from movie's trailer (if movie has one).
+ * Timestamp is represented in SER movie format, that is nanoseconds
+ * since 1st January of year 1 b.c. / 100.
+ * Frame index (`idx`) starts from 0.
+ * Use SERVideoTimeToUnixtime to convert returned timestamp to unixtime.
+ * If movie has no trailer or if the specified frame is not defined in movie's
+ * trailer, return zero. */
 uint64_t SERGetFrameDate(SERMovie *movie, long idx) {
     uint64_t date = 0;
     SERHeader *header = movie->header;
@@ -482,6 +526,7 @@ int SERCountMovieWarnings(int warnings) {
     return count;
 }
 
+/* Close movie->file and release everything. */
 void SERCloseMovie(SERMovie *movie) {
     if (movie == NULL) return;
     if (movie->header != NULL) free(movie->header);
@@ -489,6 +534,11 @@ void SERCloseMovie(SERMovie *movie) {
     free(movie);
 }
 
+/* Create a new SERMovie object and return a pointer to it.
+ * The function will also open movie->file and parse movie's header.
+ * It returns NULL if anything goes wrong.
+ * It's up to you to release the returned movie object by using
+ * `SERCloseMovie` function. */
 SERMovie *SEROpenMovie(char *filepath) {
     if (filepath == NULL) return NULL;
     SERMovie *movie = malloc(sizeof(SERMovie));
